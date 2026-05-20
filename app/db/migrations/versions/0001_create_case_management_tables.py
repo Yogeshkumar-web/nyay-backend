@@ -6,7 +6,6 @@ Create Date: 2025-04-15 09:00:00
 """
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0001"
@@ -16,33 +15,44 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("""
+    op.execute(
+        """
         CREATE TYPE case_type AS ENUM (
             'writ_petition', 'pil', 'criminal_revision', 'criminal_appeal',
             'bail_application', 'anticipatory_bail', 'quashing', 'civil_revision',
             'first_appeal', 'second_appeal', 'contempt', 'other'
         )
-    """)
-    op.execute("CREATE TYPE bench_type AS ENUM ('single_bench', 'division_bench', 'full_bench')")
-    op.execute("""
+    """
+    )
+    op.execute(
+        "CREATE TYPE bench_type AS ENUM ('single_bench', 'division_bench', 'full_bench')"
+    )
+    op.execute(
+        """
         CREATE TYPE case_stage AS ENUM (
             'filing', 'admission', 'notice', 'counter_affidavit', 'rejoinder',
             'arguments', 'judgment', 'disposed', 'transferred'
         )
-    """)
+    """
+    )
     op.execute("CREATE TYPE case_status AS ENUM ('active', 'disposed', 'archived')")
-    op.execute("""
+    op.execute(
+        """
         CREATE TYPE case_number_type AS ENUM (
             'lower_court', 'high_court', 'supreme_court', 'connected_matter', 'other'
         )
-    """)
-    op.execute("""
+    """
+    )
+    op.execute(
+        """
         CREATE TYPE party_type AS ENUM (
             'petitioner', 'respondent', 'intervener', 'amicus', 'witness', 'other'
         )
-    """)
+    """
+    )
 
-    op.execute("""
+    op.execute(
+        """
         CREATE TABLE cases (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             lawyer_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -65,12 +75,16 @@ def upgrade() -> None:
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         )
-    """)
+    """
+    )
     op.execute("CREATE INDEX idx_cases_lawyer_id ON cases(lawyer_id)")
     op.execute("CREATE INDEX idx_cases_status ON cases(status)")
-    op.execute("CREATE INDEX idx_cases_next_hearing ON cases(next_hearing_date) WHERE status = 'active'")
+    op.execute(
+        "CREATE INDEX idx_cases_next_hearing ON cases(next_hearing_date) WHERE status = 'active'"
+    )
 
-    op.execute("""
+    op.execute(
+        """
         CREATE TABLE case_numbers (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -82,11 +96,13 @@ def upgrade() -> None:
             notes VARCHAR(500),
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         )
-    """)
+    """
+    )
     op.execute("CREATE INDEX idx_case_numbers_case_id ON case_numbers(case_id)")
     op.execute("CREATE INDEX idx_case_numbers_number ON case_numbers(case_number)")
 
-    op.execute("""
+    op.execute(
+        """
         CREATE TABLE case_sections (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -99,11 +115,15 @@ def upgrade() -> None:
             removed_at TIMESTAMP WITH TIME ZONE,
             notes VARCHAR(500)
         )
-    """)
+    """
+    )
     op.execute("CREATE INDEX idx_case_sections_case_id ON case_sections(case_id)")
-    op.execute("CREATE INDEX idx_case_sections_active ON case_sections(case_id) WHERE is_active = TRUE")
+    op.execute(
+        "CREATE INDEX idx_case_sections_active ON case_sections(case_id) WHERE is_active = TRUE"
+    )
 
-    op.execute("""
+    op.execute(
+        """
         CREATE TABLE case_access (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -111,13 +131,15 @@ def upgrade() -> None:
             granted_by UUID NOT NULL REFERENCES users(id),
             can_edit BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            UNIQUE(case_id, user_id)
+            CONSTRAINT uq_case_user UNIQUE(case_id, user_id)
         )
-    """)
+    """
+    )
     op.execute("CREATE INDEX idx_case_access_user_id ON case_access(user_id)")
     op.execute("CREATE INDEX idx_case_access_case_id ON case_access(case_id)")
 
-    op.execute("""
+    op.execute(
+        """
         CREATE TABLE parties (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -129,7 +151,8 @@ def upgrade() -> None:
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
             updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         )
-    """)
+    """
+    )
     op.execute("CREATE INDEX idx_parties_case_id ON parties(case_id)")
 
 

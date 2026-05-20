@@ -3,10 +3,15 @@ from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.features.documents.models import DocumentType, OcrStatus, UploadStatus
-
+from app.features.documents.models import (
+    DocReviewStatus,
+    DocumentType,
+    OcrStatus,
+    UploadStatus,
+)
 
 # ── Requests ──────────────────────────────────────────────────────────────────
+
 
 class PresignUploadRequest(BaseModel):
     filename: str = Field(..., min_length=1, max_length=500)
@@ -24,7 +29,12 @@ class UpdateDocumentRequest(BaseModel):
     display_name: Optional[str] = Field(None, max_length=500)
 
 
+class SaveReviewRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
 # ── Responses ─────────────────────────────────────────────────────────────────
+
 
 class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -41,9 +51,17 @@ class DocumentResponse(BaseModel):
     display_name: Optional[str]
     upload_status: UploadStatus
     ocr_status: OcrStatus
+    ocr_raw_text: Optional[str] = None
     ocr_language: Optional[str]
     page_count: Optional[int]
+    ocr_job_id: Optional[str] = None
+    ocr_error: Optional[str] = None
+    ocr_provider: Optional[str] = None
+    ocr_started_at: Optional[datetime] = None
+    ocr_completed_at: Optional[datetime] = None
     is_scanned: bool
+    reviewed_content: Optional[str] = None
+    review_status: DocReviewStatus = DocReviewStatus.pending
     created_at: datetime
     updated_at: datetime
 

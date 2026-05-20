@@ -1,23 +1,154 @@
 import uuid
 from datetime import date, datetime
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, Field
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.features.cases.models import (
-    BenchType, CaseNumberType, CaseStage, CaseStatus, CaseType, PartyType
+    BenchType,
+    CaseNumberType,
+    CaseStage,
+    CaseStatus,
+    CaseType,
+    PartyType,
 )
 
 
-# ─────────────────────────────────────────────────────────────
-# Case
-# ─────────────────────────────────────────────────────────────
+def _strip(v: Optional[str]) -> Optional[str]:
+    if isinstance(v, str):
+        v = v.strip()
+        return v if v else None
+    return v
 
-class CaseCreateRequest(BaseModel):
+
+class CaseNumberCreateRequest(BaseModel):
+    number_type: CaseNumberType
+    case_number: str = Field(..., min_length=1, max_length=200)
+    court_name: Optional[str] = Field(None, max_length=255)
+    year: Optional[int] = Field(None, ge=1900, le=2100)
+    is_primary: bool = False
+    notes: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("case_number", "court_name", "notes", mode="before")
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
+
+
+class CaseNumberUpdateRequest(BaseModel):
+    number_type: Optional[CaseNumberType] = None
+    case_number: Optional[str] = Field(None, min_length=1, max_length=200)
+    court_name: Optional[str] = Field(None, max_length=255)
+    year: Optional[int] = Field(None, ge=1900, le=2100)
+    is_primary: Optional[bool] = None
+    notes: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("case_number", "court_name", "notes", mode="before")
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
+
+
+class CaseNumberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    case_id: uuid.UUID
+    number_type: CaseNumberType
+    case_number: str
+    court_name: Optional[str]
+    year: Optional[int]
+    is_primary: bool
+    notes: Optional[str]
+    created_at: datetime
+
+
+class CaseSectionCreateRequest(BaseModel):
+    section: str = Field(..., min_length=1, max_length=200)
+    act_name: str = Field(..., min_length=1, max_length=200)
+    notes: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("section", "act_name", "notes", mode="before")
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
+
+
+class CaseSectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    case_id: uuid.UUID
+    section: str
+    act_name: str
+    is_active: bool
+    added_by: uuid.UUID
+    added_at: datetime
+    removed_by: Optional[uuid.UUID]
+    removed_at: Optional[datetime]
+    notes: Optional[str]
+
+
+class PartyCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=500)
+    party_type: PartyType
+    address: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    notes: Optional[str] = None
+
+    @field_validator("name", "address", "phone", "notes", mode="before")
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, v):
+        if v and not v.isdigit():
+            raise ValueError("Phone must contain only digits")
+        return v
+
+
+class PartyUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=500)
+    party_type: Optional[PartyType] = None
+    address: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=20)
+    notes: Optional[str] = None
+
+    @field_validator("name", "address", "phone", "notes", mode="before")
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, v):
+        if v and not v.isdigit():
+            raise ValueError("Phone must contain only digits")
+        return v
+
+
+class PartyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    case_id: uuid.UUID
+    name: str
+    party_type: PartyType
+    address: Optional[str]
+    phone: Optional[str]
+    notes: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CaseBase(BaseModel):
     case_title: str = Field(..., min_length=3, max_length=500)
     case_type: CaseType
     bench_type: BenchType = BenchType.single_bench
-    petitioner_name: str = Field(..., min_length=2, max_length=500)
-    respondent_name: str = Field(..., min_length=2, max_length=500)
+    petitioner_name: str = Field(..., min_length=1, max_length=500)
+    respondent_name: str = Field(..., min_length=1, max_length=500)
     act_name: Optional[str] = Field(None, max_length=255)
     court_number: Optional[str] = Field(None, max_length=20)
     brief_facts: Optional[str] = None
@@ -27,6 +158,26 @@ class CaseCreateRequest(BaseModel):
     bail_rejection_date: Optional[date] = None
     limitation_expiry_date: Optional[date] = None
     notes: Optional[str] = None
+
+    @field_validator(
+        "case_title",
+        "petitioner_name",
+        "respondent_name",
+        "act_name",
+        "court_number",
+        "brief_facts",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
+
+
+class CaseCreateRequest(CaseBase):
+    case_numbers: list[CaseNumberCreateRequest] = Field(default_factory=list)
+    sections: list[CaseSectionCreateRequest] = Field(default_factory=list)
+    parties: list[PartyCreateRequest] = Field(default_factory=list)
 
 
 class CaseUpdateRequest(BaseModel):
@@ -35,10 +186,10 @@ class CaseUpdateRequest(BaseModel):
     bench_type: Optional[BenchType] = None
     stage: Optional[CaseStage] = None
     status: Optional[CaseStatus] = None
-    court_number: Optional[str] = Field(None, max_length=20)
-    petitioner_name: Optional[str] = Field(None, min_length=2, max_length=500)
-    respondent_name: Optional[str] = Field(None, min_length=2, max_length=500)
+    petitioner_name: Optional[str] = Field(None, min_length=1, max_length=500)
+    respondent_name: Optional[str] = Field(None, min_length=1, max_length=500)
     act_name: Optional[str] = Field(None, max_length=255)
+    court_number: Optional[str] = Field(None, max_length=20)
     brief_facts: Optional[str] = None
     filing_date: Optional[date] = None
     next_hearing_date: Optional[date] = None
@@ -46,6 +197,20 @@ class CaseUpdateRequest(BaseModel):
     bail_rejection_date: Optional[date] = None
     limitation_expiry_date: Optional[date] = None
     notes: Optional[str] = None
+
+    @field_validator(
+        "case_title",
+        "petitioner_name",
+        "respondent_name",
+        "act_name",
+        "court_number",
+        "brief_facts",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def normalize_strings(cls, v):
+        return _strip(v)
 
 
 class CaseResponse(BaseModel):
@@ -74,80 +239,10 @@ class CaseResponse(BaseModel):
 
 
 class CaseDetailResponse(CaseResponse):
-    case_numbers: list["CaseNumberResponse"] = []
-    sections: list["CaseSectionResponse"] = []
-    parties: list["PartyResponse"] = []
+    case_numbers: list[CaseNumberResponse] = Field(default_factory=list)
+    sections: list[CaseSectionResponse] = Field(default_factory=list)
+    parties: list[PartyResponse] = Field(default_factory=list)
 
-
-class CaseListResponse(BaseModel):
-    cases: list[CaseResponse]
-    pagination: "PaginationMeta"
-
-
-# ─────────────────────────────────────────────────────────────
-# Case Number
-# ─────────────────────────────────────────────────────────────
-
-class CaseNumberCreateRequest(BaseModel):
-    number_type: CaseNumberType
-    case_number: str = Field(..., min_length=1, max_length=200)
-    court_name: Optional[str] = Field(None, max_length=255)
-    year: Optional[int] = Field(None, ge=1900, le=2100)
-    is_primary: bool = False
-    notes: Optional[str] = Field(None, max_length=500)
-
-
-class CaseNumberUpdateRequest(BaseModel):
-    number_type: Optional[CaseNumberType] = None
-    case_number: Optional[str] = Field(None, min_length=1, max_length=200)
-    court_name: Optional[str] = Field(None, max_length=255)
-    year: Optional[int] = Field(None, ge=1900, le=2100)
-    is_primary: Optional[bool] = None
-    notes: Optional[str] = Field(None, max_length=500)
-
-
-class CaseNumberResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    case_id: uuid.UUID
-    number_type: CaseNumberType
-    case_number: str
-    court_name: Optional[str]
-    year: Optional[int]
-    is_primary: bool
-    notes: Optional[str]
-    created_at: datetime
-
-
-# ─────────────────────────────────────────────────────────────
-# Case Section
-# ─────────────────────────────────────────────────────────────
-
-class CaseSectionCreateRequest(BaseModel):
-    section: str = Field(..., min_length=1, max_length=200)
-    act_name: str = Field(..., min_length=1, max_length=200)
-    notes: Optional[str] = Field(None, max_length=500)
-
-
-class CaseSectionResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    case_id: uuid.UUID
-    section: str
-    act_name: str
-    is_active: bool
-    added_by: uuid.UUID
-    added_at: datetime
-    removed_by: Optional[uuid.UUID]
-    removed_at: Optional[datetime]
-    notes: Optional[str]
-
-
-# ─────────────────────────────────────────────────────────────
-# Case Access
-# ─────────────────────────────────────────────────────────────
 
 class CaseAccessGrantRequest(BaseModel):
     user_id: uuid.UUID
@@ -165,72 +260,8 @@ class CaseAccessResponse(BaseModel):
     created_at: datetime
 
 
-# ─────────────────────────────────────────────────────────────
-# Party
-# ─────────────────────────────────────────────────────────────
-
-class PartyCreateRequest(BaseModel):
-    name: str = Field(..., min_length=2, max_length=500)
-    party_type: PartyType
-    address: Optional[str] = None
-    phone: Optional[str] = Field(None, max_length=20)
-    notes: Optional[str] = None
-
-
-class PartyUpdateRequest(BaseModel):
-    name: Optional[str] = Field(None, min_length=2, max_length=500)
-    party_type: Optional[PartyType] = None
-    address: Optional[str] = None
-    phone: Optional[str] = Field(None, max_length=20)
-    notes: Optional[str] = None
-
-
-class PartyResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    case_id: uuid.UUID
-    name: str
-    party_type: PartyType
-    address: Optional[str]
-    phone: Optional[str]
-    notes: Optional[str]
-    created_at: datetime
-    updated_at: datetime
-
-
-# ─────────────────────────────────────────────────────────────
-# Pagination
-# ─────────────────────────────────────────────────────────────
-
 class PaginationMeta(BaseModel):
     page: int
     limit: int
     total: int
     total_pages: int
-
-
-# ─────────────────────────────────────────────────────────────
-# Shared API envelope
-# ─────────────────────────────────────────────────────────────
-
-class SuccessResponse(BaseModel):
-    success: bool = True
-    data: dict | list | None = None
-    message: Optional[str] = None
-
-
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
-    details: dict = {}
-
-
-class ErrorResponse(BaseModel):
-    success: bool = False
-    error: ErrorDetail
-
-
-# Update forward refs
-CaseDetailResponse.model_rebuild()
-CaseListResponse.model_rebuild()

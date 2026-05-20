@@ -10,3 +10,27 @@ wheels/
 .venv
 helpguide.md
 file_and_folder_structure.md
+.env
+secrets/
+*.secret.json
+
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+
+# Database and Celery
+*.db
+*.sqlite3
+celerybeat-schedule
+celerybeat.pid
+# auth-flow.md
+# user-profile.md
+# user-stories.md
+# vakilsuite-project-plan.md
+user-profile.md
+user-stories.md
+vakilsuite-project-plan.md
+auth-flow.md

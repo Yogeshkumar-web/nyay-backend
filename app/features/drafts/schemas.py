@@ -1,21 +1,79 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, Field
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.features.drafts.models import DraftStatus, DraftType, ExportFormat
+
+# ============================================================
+# CONSTANTS (Centralized Limits)
+# ============================================================
+
+MAX_TITLE_LENGTH = 500
+MAX_CONTENT_LENGTH = 200_000  # ~200KB safe for Tiptap HTML
+MAX_INSTRUCTIONS_LENGTH = 5_000  # Prevent prompt abuse
+
+
+# ============================================================
+# REQUEST SCHEMAS
+# ============================================================
 
 
 class CreateDraftRequest(BaseModel):
     draft_type: DraftType
-    title: Optional[str] = None
-    additional_instructions: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=MAX_TITLE_LENGTH)
+    additional_instructions: Optional[str] = Field(
+        default=None,
+        max_length=MAX_INSTRUCTIONS_LENGTH,
+    )
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            v = v.strip()
+            if not v:
+                raise ValueError("Title cannot be empty or whitespace")
+        return v
+
+    @field_validator("additional_instructions")
+    @classmethod
+    def sanitize_instructions(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            v = v.strip()
+            if not v:
+                return None
+        return v
 
 
 class UpdateDraftRequest(BaseModel):
-    content: Optional[str] = None
-    title: Optional[str] = Field(None, max_length=500)
+    content: Optional[str] = Field(default=None, max_length=MAX_CONTENT_LENGTH)
+    title: Optional[str] = Field(default=None, max_length=MAX_TITLE_LENGTH)
     status: Optional[DraftStatus] = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            v = v.strip()
+            if not v:
+                raise ValueError("Title cannot be empty")
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            v = v.strip()
+            if not v:
+                return None
+        return v
+
+
+# ============================================================
+# RESPONSE SCHEMAS
+# ============================================================
 
 
 class DraftResponse(BaseModel):
@@ -45,6 +103,11 @@ class DraftExportResponse(BaseModel):
     file_size_bytes: Optional[int]
     expires_at: Optional[datetime]
     created_at: datetime
+
+
+# ============================================================
+# EXPORT REQUEST
+# ============================================================
 
 
 class TriggerExportRequest(BaseModel):

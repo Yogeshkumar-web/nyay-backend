@@ -13,7 +13,7 @@ Schema per job:
 import enum
 import json
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 import redis.asyncio as aioredis
 

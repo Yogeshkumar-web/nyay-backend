@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+tests/
+*.md
+.env
+.env.*
+app/db/migrations/versions/__pycache__/
