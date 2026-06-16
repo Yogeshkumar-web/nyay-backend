@@ -10,6 +10,8 @@ from app.features.documents.models import (
     Document,
     DocReviewStatus,
     OcrStatus,
+    ProcessingRoute,
+    ProcessingStatus,
     UploadStatus,
 )
 from app.features.documents.schemas import UpdateDocumentRequest
@@ -52,16 +54,17 @@ class DocumentRepository:
         await self.session.flush()
         return doc
 
-    async def confirm_upload(self, doc: Document, is_scanned: bool) -> Document:
+    async def confirm_upload(self, doc: Document, is_scanned: bool | None) -> Document:
         if doc.upload_status == UploadStatus.uploaded:
-            if doc.is_scanned != is_scanned:
+            if is_scanned is not None and doc.is_scanned != is_scanned:
                 doc.is_scanned = is_scanned
                 doc.updated_at = datetime.utcnow()
                 await self.session.flush()
             return doc  # idempotent
 
         doc.upload_status = UploadStatus.uploaded
-        doc.is_scanned = is_scanned
+        if is_scanned is not None:
+            doc.is_scanned = is_scanned
         doc.updated_at = datetime.utcnow()
 
         await self.session.flush()
@@ -127,6 +130,54 @@ class DocumentRepository:
         doc.ocr_completed_at = None
         doc.reviewed_content = None
         doc.review_status = DocReviewStatus.pending
+        doc.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return doc
+
+    async def start_processing(
+        self,
+        doc: Document,
+        *,
+        job_id: str,
+    ) -> Document:
+        doc.processing_status = ProcessingStatus.processing
+        doc.processing_job_id = job_id
+        doc.processing_error = None
+        doc.processing_started_at = datetime.utcnow()
+        doc.processing_completed_at = None
+        doc.source_text = None
+        doc.source_artifact = None
+        doc.classification_details = None
+        doc.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return doc
+
+    async def complete_processing(
+        self,
+        doc: Document,
+        *,
+        route: ProcessingRoute,
+        source_text: str,
+        source_artifact: dict,
+        classification_details: dict,
+        is_scanned: bool,
+    ) -> Document:
+        doc.processing_route = route
+        doc.processing_status = ProcessingStatus.completed
+        doc.processing_error = None
+        doc.processing_completed_at = datetime.utcnow()
+        doc.source_text = source_text
+        doc.source_artifact = source_artifact
+        doc.classification_details = classification_details
+        doc.is_scanned = is_scanned
+        doc.updated_at = datetime.utcnow()
+        await self.session.flush()
+        return doc
+
+    async def fail_processing(self, doc: Document, *, error: str) -> Document:
+        doc.processing_status = ProcessingStatus.failed
+        doc.processing_error = error
+        doc.processing_completed_at = datetime.utcnow()
         doc.updated_at = datetime.utcnow()
         await self.session.flush()
         return doc

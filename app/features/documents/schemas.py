@@ -7,6 +7,8 @@ from app.features.documents.models import (
     DocReviewStatus,
     DocumentType,
     OcrStatus,
+    ProcessingRoute,
+    ProcessingStatus,
     UploadStatus,
 )
 
@@ -21,7 +23,8 @@ class PresignUploadRequest(BaseModel):
 
 
 class ConfirmUploadRequest(BaseModel):
-    is_scanned: bool = False
+    # Kept for backward compatibility. The backend classifies the stored file.
+    is_scanned: bool | None = None
 
 
 class UpdateDocumentRequest(BaseModel):
@@ -60,6 +63,15 @@ class DocumentResponse(BaseModel):
     ocr_started_at: Optional[datetime] = None
     ocr_completed_at: Optional[datetime] = None
     is_scanned: bool
+    processing_route: ProcessingRoute = ProcessingRoute.pending
+    processing_status: ProcessingStatus = ProcessingStatus.pending
+    processing_job_id: Optional[str] = None
+    processing_error: Optional[str] = None
+    processing_started_at: Optional[datetime] = None
+    processing_completed_at: Optional[datetime] = None
+    source_text: Optional[str] = None
+    source_artifact: Optional[dict] = None
+    classification_details: Optional[dict] = None
     reviewed_content: Optional[str] = None
     review_status: DocReviewStatus = DocReviewStatus.pending
     created_at: datetime

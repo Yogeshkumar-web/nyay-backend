@@ -1,12 +1,11 @@
 from app.features.documents.document_ai_layout import extract_tables
 from app.features.documents.fir_template_service import FirTemplateService
 from app.features.documents.fir_reconstruction import reconstruct_fir, render_fir_html
-from app.features.documents.ocr_service import _normalize_text, _postprocess_ocr_text
-from tests.features.test_fir_ocr_formatter import FIR_OCR_SAMPLE
+from tests.features.fir_sample import FIR_OCR_SAMPLE
 
 
 def _sample_text() -> str:
-    return _postprocess_ocr_text(_normalize_text(FIR_OCR_SAMPLE))
+    return FIR_OCR_SAMPLE
 
 
 def test_fir_schema_extracts_golden_sample_metadata():

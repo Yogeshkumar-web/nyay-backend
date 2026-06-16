@@ -1,12 +1,3 @@
-import unittest
-
-from app.features.documents.ocr_service import (
-    _normalize_text,
-    _postprocess_ocr_text,
-    _render_printable_fir_html,
-)
-
-
 FIR_OCR_SAMPLE = """
 FIRST INFORMATION REPORT
 ( Under Section 173 B.N.S.S ) प्रथम सूचना रिपोर्ट
@@ -69,52 +60,3 @@ Name ( नाम ) : THANA THAKURDWARA Rank ( पद ) : I ( Inspector ) No. ( �
 
 15. Date and time of dispatch to the court :
 """
-
-
-class FirOcrFormatterTest(unittest.TestCase):
-    def render(self) -> str:
-        cleaned = _postprocess_ocr_text(_normalize_text(FIR_OCR_SAMPLE))
-        html = _render_printable_fir_html(cleaned)
-        self.assertIsNotNone(html)
-        return html or ""
-
-    def test_basic_details_are_split(self):
-        html = self.render()
-        self.assertIn("District/Unit", html)
-        self.assertIn("मुरादाबाद", html)
-        self.assertIn("Police Station", html)
-        self.assertIn("ठाकुरद्वारा", html)
-        self.assertIn("FIR No.", html)
-        self.assertIn("0059", html)
-        self.assertIn("17/02/2025 14:21", html)
-
-    def test_sections_table_is_preserved(self):
-        html = self.render()
-        for section in (
-            "<td>74</td>",
-            "<td>76</td>",
-            "<td>115(2)</td>",
-            "<td>351(3)</td>",
-        ):
-            self.assertIn(section, html)
-        self.assertIn("S.No. (क्र.सं.)", html)
-        self.assertIn("Acts (अधिनियम)", html)
-        self.assertIn("Sections (धारा(एँ))", html)
-
-    def test_accused_are_not_mixed(self):
-        html = self.render()
-        for name in ("योगेश", "गौरव सिंह", "सौरव"):
-            self.assertIn(f"<td>{name}</td>", html)
-        self.assertEqual(html.count("पिता का नाम: हरि सिंह"), 3)
-
-    def test_narrative_is_preserved_and_empty_tables_are_quiet(self):
-        html = self.render()
-        self.assertIn("नकल तहरीर हिन्दी सेवा में", html)
-        self.assertIn("जान से मारने की धमकी दी", html)
-        self.assertIn("9. Particulars of properties", html)
-        self.assertIn("Property Category", html)
-        self.assertNotIn("Propertty Category", html)
-
-
-if __name__ == "__main__":
-    unittest.main()

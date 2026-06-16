@@ -1,5 +1,5 @@
 import secrets
-from typing import List
+from typing import List, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    COOKIE_DOMAIN: str | None = None
+    COOKIE_SECURE: bool = False
+    COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+
     # ─────────────────────────────────────────────
     # Database
     # ─────────────────────────────────────────────
@@ -44,7 +48,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────
     # CORS
     # ─────────────────────────────────────────────
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
     # ─────────────────────────────────────────────
     # Cloudflare R2
@@ -147,6 +151,12 @@ class Settings(BaseSettings):
 
             if not self.SENTRY_DSN:
                 raise RuntimeError("❌ SENTRY_DSN required in production")
+
+            if not self.COOKIE_SECURE:
+                raise RuntimeError("❌ COOKIE_SECURE must be True in production")
+
+        if self.COOKIE_SAMESITE == "none" and not self.COOKIE_SECURE:
+            raise RuntimeError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
 
 
 settings = Settings()

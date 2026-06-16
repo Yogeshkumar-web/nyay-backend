@@ -9,7 +9,7 @@ celery_app = Celery(
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
     include=[
-        "app.workers.ocr_tasks",
+        "app.workers.document_processing_tasks",
         "app.workers.extraction_tasks",
         "app.workers.typing_tasks",
         "app.workers.export_tasks",

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-VakilSuite — SaaS for Allahabad High Court lawyers. Core flow: Case → Document Upload → OCR (Google Document AI) → AI Extraction → Human Review → Push to Context → Case Summary → Draft Generation (streamed) → Tiptap Editor → Export PDF/DOCX.
+VakilSuite — SaaS for Allahabad High Court lawyers. Core flow: Case → Document Upload → OCR → AI Extraction → Human Review → Push to Context → Case Summary → Draft Generation (streamed) → Tiptap Editor → Export PDF/DOCX.
+
+Uploaded documents are classified server-side. Scanned PDFs and images use Google Document AI OCR and the typing worker; searchable PDFs and DOCX files use local text extraction without opening the rich-text editor.
 
 ## Commands
 
@@ -31,14 +33,13 @@ mypy .                            # Type check
 
 # Celery workers — Windows development
 # MUST use --pool=solo on Windows (prefork uses fork() which Windows doesn't support)
-celery -A app.workers.celery_app worker --loglevel=info -Q ocr --pool=solo
 celery -A app.workers.celery_app worker --loglevel=info -Q extraction --pool=solo
 celery -A app.workers.celery_app worker --loglevel=info -Q export --pool=solo
 # All queues at once (dev convenience):
 celery -A app.workers.celery_app worker --loglevel=info --pool=solo
 
 # Production (Linux) — prefork works fine, no --pool flag needed:
-# celery -A app.workers.celery_app worker --loglevel=info -Q ocr
+# celery -A app.workers.celery_app worker --loglevel=info -Q extraction
 ```
 
 ## Architecture
@@ -70,7 +71,7 @@ Migrations live in `app/db/migrations/versions/`. Never edit an applied migratio
 
 ### Workers (`app/workers/`)
 
-OCR, AI extraction, typing, and export jobs run as Celery tasks (Redis broker). HTTP endpoints never block on these — they enqueue and return a `job_id`. Job status is tracked in Redis and polled via `GET /api/v1/jobs/{job_id}`.
+Document processing, AI extraction, typing, and export jobs run as Celery tasks (Redis broker). HTTP endpoints never block on long-running work — they enqueue and return a `job_id`. Job status is tracked in Redis and polled via `GET /api/v1/jobs/{job_id}`.
 
 ### Auth Flow
 

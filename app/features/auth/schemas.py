@@ -1,5 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 
+from app.features.users.schemas import LawyerProfileResponse
+
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -16,11 +18,17 @@ class TokenResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     access_token: str
     token_type: str = "bearer"
+    user: LawyerProfileResponse
 
 
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
     token_type: str = "bearer"
 
 

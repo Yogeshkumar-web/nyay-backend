@@ -56,6 +56,20 @@ class OcrStatus(str, enum.Enum):
     not_required = "not_required"
 
 
+class ProcessingRoute(str, enum.Enum):
+    pending = "pending"
+    scanned_ocr = "scanned_ocr"
+    digital_extract = "digital_extract"
+    hybrid_extract = "hybrid_extract"
+
+
+class ProcessingStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+
+
 class DocReviewStatus(str, enum.Enum):
     pending = "pending"
     reviewed = "reviewed"
@@ -125,6 +139,26 @@ class Document(Base):
     ocr_completed_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     is_scanned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    processing_route: Mapped[ProcessingRoute] = mapped_column(
+        SAEnum(ProcessingRoute, name="document_processing_route"),
+        nullable=False,
+        default=ProcessingRoute.pending,
+        server_default="pending",
+    )
+    processing_status: Mapped[ProcessingStatus] = mapped_column(
+        SAEnum(ProcessingStatus, name="document_processing_status"),
+        nullable=False,
+        default=ProcessingStatus.pending,
+        server_default="pending",
+    )
+    processing_job_id: Mapped[str | None] = mapped_column(String(100))
+    processing_error: Mapped[str | None] = mapped_column(Text)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    source_text: Mapped[str | None] = mapped_column(Text)
+    source_artifact: Mapped[dict | None] = mapped_column(JSONB)
+    classification_details: Mapped[dict | None] = mapped_column(JSONB)
 
     reviewed_content: Mapped[str | None] = mapped_column(Text)
 

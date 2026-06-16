@@ -141,9 +141,23 @@ async def update_document(
 
 @router.post(
     "/documents/{document_id}/run-ocr",
-    summary="Manually trigger OCR on a document",
+    summary="Process a document, using OCR only when required",
 )
 async def run_ocr(
+    document_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: DB,
+):
+    service = DocumentService(db)
+    result = await service.run_ocr(document_id, current_user)
+    return {"success": True, "data": result}
+
+
+@router.post(
+    "/documents/{document_id}/process",
+    summary="Process a document, using OCR only when required",
+)
+async def process_document(
     document_id: uuid.UUID,
     current_user: CurrentUser,
     db: DB,

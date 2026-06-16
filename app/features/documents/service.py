@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.features.cases.repository import CaseRepository
-from app.features.documents.models import Document, OcrStatus, UploadStatus
+from app.features.documents.models import (
+    Document,
+    OcrStatus,
+    ProcessingStatus,
+    UploadStatus,
+)
 from app.features.documents.repository import DocumentRepository
 from app.features.documents.schemas import (
     ConfirmUploadRequest,
@@ -32,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_MIME_TYPES = {
     "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "image/jpeg",
     "image/png",
     "image/tiff",
@@ -235,6 +241,13 @@ class DocumentService:
         await self._require_storage_object_available(doc)
         doc = await self.repo.confirm_upload(doc, data.is_scanned)
         await self.db.commit()
+
+        try:
+            await self._queue_processing(doc)
+        except ValidationError:
+            logger.exception(
+                "Automatic processing queue failed for uploaded document %s", doc.id
+            )
         response = DocumentResponse.model_validate(doc)
 
         # ─────────────────────────────
@@ -274,78 +287,35 @@ class DocumentService:
 
         await self._require_case_edit(doc.case_id, current_user)
 
-        logger.info(
-            "OCR preflight loaded document id=%s case_id=%s upload_status=%s "
-            "ocr_status=%s bucket=%s key=%s mime_type=%s",
-            doc.id,
-            doc.case_id,
-            doc.upload_status.value,
-            doc.ocr_status.value,
-            doc.r2_bucket,
-            doc.r2_key,
-            doc.mime_type,
-        )
+        return await self._queue_processing(doc, force=True)
 
-        if await self._recover_stale_ocr(doc):
-            await self.db.commit()
+    async def _queue_processing(self, doc: Document, *, force: bool = False) -> dict:
+        from app.workers.document_processing_tasks import process_document
+        from app.workers.job_store import JobStatus, set_job_status
 
-        if doc.ocr_status == OcrStatus.processing:
-            raise ValidationError("OCR is already running for this document")
-
-        from app.features.documents.ocr_service import ensure_document_ai_configured
-
-        if not doc.is_scanned:
-            doc.is_scanned = True
-            doc.updated_at = datetime.utcnow()
-            await self.db.flush()
-
-        try:
-            doc = await self._ensure_upload_confirmed_from_storage(
-                doc,
-                verify_existing=True,
-            )
-            ensure_document_ai_configured(doc.document_type.value)
-        except ValidationError as exc:
-            error_message = _format_validation_error(exc)
-            await self.repo.set_ocr_status(
-                doc,
-                OcrStatus.failed,
-                error=error_message,
-                provider="google_document_ai",
-            )
-            await self.db.commit()
-            logger.warning(
-                "OCR preflight failed for document %s: %s",
-                document_id,
-                error_message,
-            )
-            raise ValidationError(error_message, details=exc.details) from exc
+        doc = await self._ensure_upload_confirmed_from_storage(doc)
+        if doc.processing_status == ProcessingStatus.processing:
+            return {"job_id": doc.processing_job_id, "already_running": True}
 
         job_id = str(uuid.uuid4())
+        await self.repo.start_processing(doc, job_id=job_id)
         await self.repo.start_ocr(doc, job_id=job_id)
         await self.db.commit()
-
-        from app.workers.ocr_tasks import run_ocr_on_document
-        from app.workers.job_store import JobStatus, set_job_status
 
         try:
             await set_job_status(
                 job_id,
                 JobStatus.pending,
-                result={"document_id": str(document_id)},
+                result={"document_id": str(doc.id)},
             )
-            run_ocr_on_document.apply_async(args=[str(document_id)], task_id=job_id)
+            process_document.apply_async(args=[str(doc.id)], task_id=job_id)
         except Exception as exc:
-            await self.repo.set_ocr_status(
-                doc,
-                OcrStatus.failed,
-                error="OCR worker is not available. Start Redis/Celery and retry.",
-            )
+            logger.exception("Failed to queue document processing for %s", doc.id)
+            message = "Document worker is not available. Start Redis/Celery and retry."
+            await self.repo.fail_processing(doc, error=message)
+            await self.repo.set_ocr_status(doc, OcrStatus.failed, error=message)
             await self.db.commit()
-            logger.exception("Failed to queue OCR task for document %s", document_id)
-            raise ValidationError(
-                "OCR worker is not available. Start Redis/Celery and retry."
-            ) from exc
+            raise ValidationError(message) from exc
         return {"job_id": job_id}
 
     # ── List documents ─────────────────────────────────────────────────────────
@@ -361,25 +331,7 @@ class DocumentService:
 
         await self._require_case_edit(doc.case_id, current_user)
 
-        doc = await self._ensure_upload_confirmed_from_storage(doc)
-
-        doc = await self.repo.skip_ocr(doc)
-        await self.db.flush()
-
-        # Auto-create an empty TypedVersion so the editor opens immediately.
-        # Idempotent — if one already exists (e.g. retry), it is left unchanged.
-        from app.features.extraction.repository import ExtractionRepository
-
-        extraction_repo = ExtractionRepository(self.db)
-        existing_tv = await extraction_repo.get_typed_version(document_id)
-        if existing_tv is None:
-            await extraction_repo.create_or_update_typed_version(
-                document_id=document_id,
-                typed_content="",
-                raw_ai_response="",
-            )
-
-        await self.db.commit()
+        await self._queue_processing(doc, force=True)
         return DocumentResponse.model_validate(doc)
 
     async def list_documents(
@@ -504,7 +456,7 @@ class DocumentService:
 
         await self._require_case_edit(doc.case_id, current_user)
 
-        content_to_push = doc.reviewed_content or doc.ocr_raw_text
+        content_to_push = doc.reviewed_content or doc.source_text or doc.ocr_raw_text
         if not _has_meaningful_content(content_to_push):
             if doc.ocr_status == OcrStatus.processing:
                 raise ValidationError(
@@ -615,8 +567,8 @@ class DocumentService:
                 pending_ocr += 1
 
             # Step 2: TypedVersion saved
-            typed_ok = False
-            if ocr_ok:
+            typed_ok = doc.processing_route.value == "digital_extract"
+            if ocr_ok and not typed_ok:
                 tv = await ext_repo.get_typed_version(doc.id)
                 typed_ok = tv is not None and tv.status in (
                     ReviewStatus.edited,

@@ -2,7 +2,7 @@ import uuid
 import logging
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.users.models import AuthProvider, User, UserRole
@@ -22,7 +22,16 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> User | None:
-        result = await self.session.execute(select(User).where(User.email == email))
+        normalized = email.strip().lower()
+        result = await self.session.execute(
+            select(User).where(func.lower(User.email) == normalized)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_provider_id(self, provider_id: str) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.provider_id == provider_id)
+        )
         return result.scalar_one_or_none()
 
     # ─────────────────────────────────────────────
@@ -41,7 +50,7 @@ class UserRepository:
     ) -> User:
         user = User(
             full_name=full_name,
-            email=email,
+            email=email.strip().lower(),
             hashed_password=hashed_password,
             role=role,
             auth_provider=auth_provider,

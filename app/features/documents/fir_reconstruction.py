@@ -240,7 +240,7 @@ def render_fir_schema_html(schema: FirSchema) -> str:
 
     parts: list[str] = [
         '<div class="typed-document typed-fir">',
-        "<style>.typed-fir table{border-collapse:collapse;width:100%;margin:8px 0 14px 0;table-layout:fixed}.typed-fir th,.typed-fir td{border:1px solid #cfcfcf;padding:7px 9px;vertical-align:top;word-wrap:break-word}.typed-fir th{text-align:left;background:#f7f7f7}.typed-fir p{margin:6px 0}</style>",
+        "<style>.typed-fir{font-family:'Noto Sans Devanagari','Mangal','Arial Unicode MS',sans-serif}.typed-fir table{border-collapse:collapse;width:100%;margin:8px 0 14px 0;table-layout:fixed}.typed-fir th,.typed-fir td{border:1px solid #cfcfcf;padding:7px 9px;vertical-align:top;word-wrap:break-word}.typed-fir th{text-align:left;background:#f7f7f7}.typed-fir p{margin:6px 0}</style>",
         '<h2 style="text-align:center">FIRST INFORMATION REPORT</h2>',
         '<p style="text-align:center"><strong>(Under Section 173 B.N.S.S)</strong></p>',
         '<p style="text-align:center"><strong>प्रथम सूचना रिपोर्ट</strong></p>',
@@ -409,7 +409,7 @@ def render_fir_schema_html(schema: FirSchema) -> str:
                 or [["", ""]],
             ),
             "<p><strong>12. First Information contents (प्रथम सूचना तथ्य):</strong></p>",
-            f"<p>{_e(_not_stated(schema.fir_contents))}</p>",
+            _narrative_html(schema.fir_contents),
             "<p><strong>13. Action taken: Since the above information reveals commission of offence(s) u/s as mentioned at Item No. 2.</strong></p>",
             "<p>(की गयी कार्यवाही : चूंकि उपरोक्त जानकारी से पता चलता है कि अपराध करने का तरीका मद सं. 2 में उल्लेख धारा के तहत है.):</p>",
             "<p><strong>(1) Registered the case and took up the investigation:</strong> / or (या)</p>",
@@ -1064,6 +1064,13 @@ def _find_address_lines(text: str) -> list[str]:
     return addresses[:2]
 
 
+def _narrative_html(text: str) -> str:
+    paragraphs = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    if not paragraphs:
+        return "<p>Not stated</p>"
+    return "".join(f"<p>{_e(p)}</p>" for p in paragraphs)
+
+
 def _extract_narrative(text: str) -> str:
     section_text = _section_by_number(text, 12)
     if not section_text:
@@ -1074,7 +1081,8 @@ def _extract_narrative(text: str) -> str:
         section_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
-    return _compact(_rebuild_narrative(narrative))
+    # Preserve paragraph breaks — do NOT pass through _compact() which collapses newlines.
+    return _rebuild_narrative(narrative).strip()
 
 
 def _rebuild_narrative(text: str) -> str:
