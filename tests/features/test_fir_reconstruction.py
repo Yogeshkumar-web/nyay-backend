@@ -1,5 +1,4 @@
-from app.features.documents.document_ai_layout import extract_tables
-from app.features.documents.fir_template_service import FirTemplateService
+from app.features.documents.layout_artifact import extract_tables
 from app.features.documents.fir_reconstruction import reconstruct_fir, render_fir_html
 from tests.features.fir_sample import FIR_OCR_SAMPLE
 
@@ -36,7 +35,7 @@ def test_fir_schema_keeps_signature_and_narrative_boundaries():
     assert "Action taken" not in schema.fir_contents
 
 
-def test_document_ai_layout_extracts_and_classifies_tables():
+def test_layout_artifact_extracts_and_classifies_tables():
     artifact = _layout_artifact()
 
     tables = extract_tables(artifact)
@@ -47,7 +46,7 @@ def test_document_ai_layout_extracts_and_classifies_tables():
     assert tables[1].rows[0][1].text == "Yogesh"
 
 
-def test_fir_schema_prefers_document_ai_tables_before_text_fallback():
+def test_fir_schema_prefers_layout_tables_before_text_fallback():
     text = """
 FIRST INFORMATION REPORT
 1. District / Unit: Test District P.S. ( थाना ): Test PS Year ( वर्ष ): 2026
@@ -241,30 +240,13 @@ def test_fir_html_uses_canonical_tables_and_corrected_labels():
     assert "THANA THAKURDWARA" in html
 
 
-def test_fir_template_service_builds_typed_html_and_audit_notes():
-    class DocumentStub:
-        ocr_raw_text = _sample_text()
-        ocr_artifact = _layout_artifact()
-
-    result = FirTemplateService().build_typed_version(DocumentStub())
-
-    assert result.html.startswith('<div class="typed-document typed-fir">')
-    assert "FIRST INFORMATION REPORT" in result.html
-    assert "12. First Information contents" in result.html
-    assert "13. Action taken" in result.html
-    assert "15. Date and time of dispatch" in result.html
-    assert "<td>Yogesh</td>" in result.html
-    assert "<td>Gaurav Singh</td>" in result.html
-    assert "pipeline=fir_template" in result.notes
-    assert "sources=accused:layout_table" in result.notes
-    assert "ai_cleanup=false" in result.notes
-
-
 def test_fir_template_preserves_empty_form_sections():
     schema = reconstruct_fir(_sample_text())
 
     assert schema is not None
-    html = FirTemplateService().render_html(schema)
+    from app.features.documents.fir_reconstruction import render_fir_schema_html
+
+    html = render_fir_schema_html(schema)
 
     assert "9. Particulars of properties of interest" in html
     assert "10. Total value of property" in html
@@ -272,7 +254,7 @@ def test_fir_template_preserves_empty_form_sections():
     assert "Attachment to item 7 of First Information Report" in html
 
 
-def test_fir_schema_handles_document_ai_reading_order_noise():
+def test_fir_schema_handles_ocr_reading_order_noise():
     noisy = """
 FIRST INFORMATION REPORT
 1. District/Unit (जिला/इकाई):

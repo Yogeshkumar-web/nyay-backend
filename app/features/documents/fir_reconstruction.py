@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from html import escape as html_escape
 from typing import Any
 
-from app.features.documents.document_ai_layout import LayoutTable, tables_by_type
+from app.features.documents.layout_artifact import LayoutTable, tables_by_type
 
 
 _FIR_NUMBER_RE = re.compile(r"(?m)(?:^|\n)\s*(\d{1,2})\s*[.)]\s*")

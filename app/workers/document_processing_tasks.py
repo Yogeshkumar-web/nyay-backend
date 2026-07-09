@@ -74,7 +74,7 @@ async def _process_document_async(job_id: str, document_id_str: str) -> dict:
                         raw_text=result.ocr_text,
                         language=result.ocr_language,
                         page_count=result.page_count,
-                        provider="google_document_ai",
+                        provider="local_ocr",
                         artifact=result.ocr_artifact,
                         job_id=job_id,
                     )
@@ -90,17 +90,6 @@ async def _process_document_async(job_id: str, document_id_str: str) -> dict:
                 await session.commit()
                 await set_job_status(job_id, JobStatus.failed, error=str(exc))
                 return {"status": "failed", "error": str(exc)}
-
-        if result.route != ProcessingRoute.digital_extract:
-            from app.workers.typing_tasks import _typing_task_async
-
-            typing_result = await _typing_task_async(job_id, document_id_str)
-            return {
-                "status": typing_result.get("status", "completed"),
-                "document_id": document_id_str,
-                "processing_route": result.route.value,
-                "typing": typing_result,
-            }
 
         response = {
             "document_id": document_id_str,

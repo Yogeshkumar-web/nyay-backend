@@ -55,8 +55,7 @@ def validate_file_signature(file_bytes: bytes, mime_type: str) -> None:
         "image/jpeg": file_bytes.startswith(b"\xff\xd8\xff"),
         "image/png": file_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
         "image/tiff": file_bytes[:4] in {b"II*\x00", b"MM\x00*"},
-        "image/webp": file_bytes.startswith(b"RIFF")
-        and file_bytes[8:12] == b"WEBP",
+        "image/webp": file_bytes.startswith(b"RIFF") and file_bytes[8:12] == b"WEBP",
     }
     if mime_type == DOCX_MIME:
         try:
@@ -214,8 +213,7 @@ def _append_pdf_chunk(
         return
     if len(page_numbers) == 1:
         raise DocumentInputError(
-            f"PDF page {page_numbers[0]} exceeds Google Document AI's 40 MB "
-            "online-processing limit."
+            f"PDF page {page_numbers[0]} exceeds the 40 MB OCR chunk limit."
         )
     midpoint = len(page_numbers) // 2
     _append_pdf_chunk(source, page_numbers[:midpoint], chunks, max_bytes=max_bytes)

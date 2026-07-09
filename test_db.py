@@ -1,7 +1,9 @@
 import asyncio
+
 import asyncpg
 
-async def test():
+
+async def main():
     try:
         conn = await asyncpg.connect(
             host="localhost",
@@ -9,17 +11,18 @@ async def test():
             user="vakilsuite",
             password="vakilsuite",
             database="vakilsuite",
-            ssl=False
+            ssl=False,
         )
-        
+
         print("Connected!")
 
     except Exception as e:
         print("Connection failed:", e)
 
     finally:
-        if 'conn' in locals():
+        if "conn" in locals():
             await conn.close()
             print("Connection closed")
 
-asyncio.run(test())
+
+asyncio.run(main())

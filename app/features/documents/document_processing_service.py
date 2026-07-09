@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from app.features.documents.digital_extractor import (
     DOCX_MIME,
@@ -10,9 +10,44 @@ from app.features.documents.digital_extractor import (
     extract_digital_pdf,
     extract_docx,
 )
-from app.features.documents.document_ai_service import DocumentAiOcrService
 from app.features.documents.document_classifier import classify_document
 from app.features.documents.models import ProcessingRoute
+
+
+class OcrProviderNotConfigured(RuntimeError):
+    """Raised until a local OCR provider is wired into document processing."""
+
+
+@dataclass(frozen=True)
+class OcrResult:
+    text: str
+    language: str
+    page_count: int
+    artifact: dict[str, Any]
+
+
+class OcrProvider(Protocol):
+    async def process(
+        self,
+        file_bytes: bytes,
+        mime_type: str,
+        *,
+        original_page_numbers: tuple[int, ...] | None = None,
+    ) -> OcrResult: ...
+
+
+class LocalOcrProvider:
+    async def process(
+        self,
+        file_bytes: bytes,
+        mime_type: str,
+        *,
+        original_page_numbers: tuple[int, ...] | None = None,
+    ) -> OcrResult:
+        raise OcrProviderNotConfigured(
+            "Local OCR provider is not configured yet. Wire an Indian-language "
+            "OCR model before processing scanned documents."
+        )
 
 
 @dataclass(frozen=True)
@@ -32,7 +67,7 @@ async def process_document_bytes(
     file_bytes: bytes,
     mime_type: str,
     *,
-    ocr_service: DocumentAiOcrService | None = None,
+    ocr_service: OcrProvider | None = None,
 ) -> ProcessingResult:
     classification = classify_document(file_bytes, mime_type)
     if mime_type == DOCX_MIME:
@@ -45,7 +80,10 @@ async def process_document_bytes(
             is_scanned=False,
         )
 
-    if mime_type == PDF_MIME and classification.route == ProcessingRoute.digital_extract:
+    if (
+        mime_type == PDF_MIME
+        and classification.route == ProcessingRoute.digital_extract
+    ):
         text, artifact = extract_digital_pdf(file_bytes)
         return ProcessingResult(
             route=classification.route,
@@ -56,7 +94,7 @@ async def process_document_bytes(
             page_count=classification.pdf.page_count if classification.pdf else None,
         )
 
-    service = ocr_service or DocumentAiOcrService()
+    service = ocr_service or LocalOcrProvider()
     if mime_type == PDF_MIME:
         if classification.pdf is None:
             raise RuntimeError("PDF classification details are missing.")
@@ -77,8 +115,8 @@ async def process_document_bytes(
         text = _join_page_text(pages)
         artifact = {
             "schema_version": 1,
-            "provider": "google_document_ai",
-            "processor_role": "enterprise_ocr",
+            "provider": "local_ocr",
+            "processor_role": "document_ocr",
             "route": classification.route.value,
             "pages": pages,
         }

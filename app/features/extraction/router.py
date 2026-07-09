@@ -1,8 +1,7 @@
 import uuid
 import logging
 
-from fastapi import APIRouter, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.dependencies import CurrentUser, DB
@@ -122,31 +121,6 @@ async def review_extraction(
 # ─────────────────────────────
 
 
-@router.post(
-    "/documents/{document_id}/type",
-    status_code=status.HTTP_201_CREATED,
-    summary="Trigger 'Type This Document' job",
-)
-async def trigger_typing(
-    document_id: uuid.UUID,
-    current_user: CurrentUser,
-    db: DB,
-):
-    service = ExtractionService(db)
-
-    result = await service.trigger_typing(document_id, current_user)
-
-    logger.info(
-        "typing_trigger",
-        extra={"user_id": str(current_user.id), "document_id": str(document_id)},
-    )
-
-    return {
-        "success": True,
-        "data": result,
-    }
-
-
 @router.get(
     "/documents/{document_id}/typed",
     summary="Get typed version of a document",
@@ -235,37 +209,6 @@ async def save_typed_version(
 
 class SavePushContextRequest(BaseModel):
     html_content: str
-
-
-@router.post(
-    "/documents/{document_id}/run-ai-extraction",
-    summary="Stream AI-generated structured HTML extraction (SSE)",
-)
-async def run_ai_extraction(
-    document_id: uuid.UUID,
-    current_user: CurrentUser,
-    db: DB,
-):
-    """
-    SSE stream: AI reads the document content and produces structured HTML.
-    - Uses TypedVersion content → OCR text → PDF direct extraction (priority order).
-    - Saves the result as TypedVersion when done.
-    - Client reads chunked SSE: 'data: <html_chunk>\\n\\n' then 'data: [DONE]\\n\\n'.
-    """
-    service = ExtractionService(db)
-
-    async def generate():
-        async for chunk in service.run_ai_extraction_stream(document_id, current_user):
-            yield chunk
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.post(

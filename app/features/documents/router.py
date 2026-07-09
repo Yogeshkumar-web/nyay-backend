@@ -233,23 +233,6 @@ async def get_view_url(
     return {"success": True, "data": result.model_dump()}
 
 
-# ── Typing Agent ──────────────────────────────────────────────────────────────
-
-
-@router.post(
-    "/documents/{document_id}/run-typing",
-    summary="Enqueue the LangGraph Typing Agent for this document",
-)
-async def run_typing(
-    document_id: uuid.UUID,
-    current_user: CurrentUser,
-    db: DB,
-):
-    service = DocumentService(db)
-    result = await service.run_typing(document_id, current_user)
-    return {"success": True, "data": result}
-
-
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
 

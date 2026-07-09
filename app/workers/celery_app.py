@@ -11,7 +11,6 @@ celery_app = Celery(
     include=[
         "app.workers.document_processing_tasks",
         "app.workers.extraction_tasks",
-        "app.workers.typing_tasks",
         "app.workers.export_tasks",
         "app.workers.scraper_tasks",
     ],

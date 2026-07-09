@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VakilSuite — SaaS for Allahabad High Court lawyers. Core flow: Case → Document Upload → OCR → AI Extraction → Human Review → Push to Context → Case Summary → Draft Generation (streamed) → Tiptap Editor → Export PDF/DOCX.
 
-Uploaded documents are classified server-side. Scanned PDFs and images use Google Document AI OCR and the typing worker; searchable PDFs and DOCX files use local text extraction without opening the rich-text editor.
+Uploaded documents are classified server-side. Searchable PDFs and DOCX files use local text extraction. Scanned PDFs and images are intentionally blocked until a local Indian-language OCR provider is wired in.
 
 ## Commands
 
@@ -71,7 +71,7 @@ Migrations live in `app/db/migrations/versions/`. Never edit an applied migratio
 
 ### Workers (`app/workers/`)
 
-Document processing, AI extraction, typing, and export jobs run as Celery tasks (Redis broker). HTTP endpoints never block on long-running work — they enqueue and return a `job_id`. Job status is tracked in Redis and polled via `GET /api/v1/jobs/{job_id}`.
+Document processing, AI extraction, and export jobs run as Celery tasks (Redis broker). HTTP endpoints never block on long-running work — they enqueue and return a `job_id`. Job status is tracked in Redis and polled via `GET /api/v1/jobs/{job_id}`.
 
 ### Auth Flow
 
@@ -90,7 +90,7 @@ All endpoints return:
 
 ### Prompts
 
-AI prompts live in `prompts/` as `.txt` files versioned with code — never hardcode prompts in Python. Prompts exist for: `extraction/{doc_type}`, `typing/hc_format`, `summary/case_summary`, `drafts/{draft_type}`, `courtroom/{session_type}`.
+AI prompts live in `prompts/` as `.txt` files versioned with code — never hardcode prompts in Python. Prompts exist for: `extraction/{doc_type}`, `summary/case_summary`, `drafts/{draft_type}`, `courtroom/{session_type}`.
 
 ## Environment Variables
 

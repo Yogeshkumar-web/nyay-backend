@@ -566,8 +566,12 @@ class DocumentService:
                 missing.append("ocr")
                 pending_ocr += 1
 
-            # Step 2: TypedVersion saved
-            typed_ok = doc.processing_route.value == "digital_extract"
+            # Step 2: Usable document content exists. TypedVersion is kept only
+            # as a reviewed editor artifact; generated typing is removed.
+            typed_ok = bool(
+                (doc.reviewed_content and doc.reviewed_content.strip())
+                or (doc.source_text and doc.source_text.strip())
+            )
             if ocr_ok and not typed_ok:
                 tv = await ext_repo.get_typed_version(doc.id)
                 typed_ok = tv is not None and tv.status in (
@@ -620,49 +624,3 @@ class DocumentService:
             "pending_extraction": pending_extraction,
             "documents": document_statuses,
         }
-
-    # ── Typing Agent ───────────────────────────────────────────────────────────
-
-    async def run_typing(
-        self,
-        document_id: uuid.UUID,
-        current_user: User,
-    ) -> dict:
-        """
-        Enqueue the Typing Agent (LangGraph) for this document.
-        Returns a job_id the caller can poll via GET /jobs/{job_id}.
-        """
-        doc = await self.repo.get_by_id(document_id)
-        if not doc:
-            raise NotFoundError("Document not found")
-
-        await self._require_case_edit(doc.case_id, current_user)
-
-        if not doc.ocr_raw_text:
-            raise ValidationError(
-                "OCR must complete before running the Typing Agent. "
-                "Run OCR first or skip it for digital documents."
-            )
-
-        job_id = str(uuid.uuid4())
-
-        from app.workers.typing_tasks import run_type_document
-        from app.workers.job_store import JobStatus, set_job_status
-
-        try:
-            await set_job_status(
-                job_id,
-                JobStatus.pending,
-                result={"document_id": str(document_id)},
-            )
-            run_type_document.apply_async(args=[str(document_id)], task_id=job_id)
-        except Exception as exc:
-            logger.exception("Failed to queue Typing task for document %s", document_id)
-            raise ValidationError(
-                "Typing worker is not available. Start Redis/Celery and retry."
-            ) from exc
-
-        logger.info(
-            "Typing task queued | job_id=%s | document_id=%s", job_id, document_id
-        )
-        return {"job_id": job_id}

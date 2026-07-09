@@ -2,10 +2,8 @@ import json
 import uuid
 import logging
 import asyncio
-import queue
-import threading
 from datetime import datetime
-from typing import Tuple, AsyncGenerator
+from typing import Tuple
 
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +12,7 @@ from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.features.cases.repository import CaseRepository
 from app.features.documents.repository import DocumentRepository
-from app.features.documents.models import DocReviewStatus, DocumentType, OcrStatus
+from app.features.documents.models import DocReviewStatus, DocumentType
 from app.features.extraction.models import ExtractionStatus
 from app.features.extraction.repository import ExtractionRepository
 from app.features.extraction.schemas import (
@@ -67,29 +65,6 @@ EXTRACTION_PROMPT_MAP: dict[DocumentType, str] = {
     DocumentType.vakalatnama: "extraction/vakalatnama.txt",
     DocumentType.other: "extraction/court_order.txt",
 }
-
-# Document-type-specific typing prompts.
-# Types not listed here fall back to the generic HC format.
-TYPING_PROMPT_MAP: dict[DocumentType, str] = {
-    DocumentType.fir: "typing/fir_format.txt",
-}
-
-# HTML extraction prompts — produce Tiptap-ready HTML with structured sections
-HTML_EXTRACTION_PROMPT_MAP: dict[DocumentType, str] = {
-    DocumentType.fir: "typing/fir_html.txt",
-    DocumentType.chargesheet: "typing/generic_document_html.txt",
-    DocumentType.bail_rejection_order: "typing/generic_document_html.txt",
-    DocumentType.bail_order: "typing/generic_document_html.txt",
-    DocumentType.court_order: "typing/generic_document_html.txt",
-    DocumentType.summon: "typing/generic_document_html.txt",
-    DocumentType.judgment: "typing/generic_document_html.txt",
-    DocumentType.affidavit: "typing/generic_document_html.txt",
-    DocumentType.counter_affidavit: "typing/generic_document_html.txt",
-    DocumentType.rejoinder: "typing/generic_document_html.txt",
-    DocumentType.vakalatnama: "typing/generic_document_html.txt",
-    DocumentType.other: "typing/generic_document_html.txt",
-}
-
 
 # ─────────────────────────────
 # AI Helpers — provider-switchable
@@ -219,28 +194,6 @@ async def _extract_fields_via_ai(
     return fields, raw, _confidence_score(fields)
 
 
-async def _type_document_via_ai(
-    ocr_text: str,
-    document_type: DocumentType | None = None,
-) -> Tuple[str, str]:
-    prompt_path = (
-        TYPING_PROMPT_MAP.get(document_type, "typing/hc_format.txt")
-        if document_type is not None
-        else "typing/hc_format.txt"
-    )
-    system_prompt = _load_prompt(prompt_path)
-    logger.debug(
-        "Typing document document_type=%s prompt=%s",
-        document_type,
-        prompt_path,
-    )
-    raw = await _call_ai(
-        system_prompt,
-        f"Convert this OCR text into a clean typed court document:\n\n{ocr_text}",
-    )
-    return raw.strip(), raw
-
-
 def _get_r2_client_extraction():
     """Minimal R2 client for text extraction (avoids circular import with documents/service)."""
     import boto3
@@ -254,92 +207,6 @@ def _get_r2_client_extraction():
         config=Config(signature_version="s3v4"),
         region_name="auto",
     )
-
-
-async def _extract_pdf_text(r2_bucket: str, r2_key: str) -> str:
-    """Download PDF from R2 and extract text via PyMuPDF (digital PDFs only)."""
-    import io
-    import fitz  # PyMuPDF
-
-    loop = asyncio.get_running_loop()
-
-    def _do_extract():
-        r2 = _get_r2_client_extraction()
-        obj = r2.get_object(Bucket=r2_bucket, Key=r2_key)
-        pdf_bytes = obj["Body"].read()
-        doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
-        pages = [page.get_text() for page in doc]
-        doc.close()
-        return "\n\n".join(p for p in pages if p.strip())
-
-    return await loop.run_in_executor(None, _do_extract)
-
-
-async def _stream_ai_html_gemini(
-    system_prompt: str, user_text: str
-) -> AsyncGenerator[str, None]:
-    """Stream HTML tokens from Gemini (sync SDK in thread)."""
-    from google import genai
-    from google.genai import types as genai_types
-
-    model = settings.GEMINI_MODEL or "gemini-2.5-flash"
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    q: queue.Queue = queue.Queue()
-    _DONE = object()
-
-    def _run():
-        try:
-            response = client.models.generate_content_stream(
-                model=model,
-                contents=user_text,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=6000,
-                ),
-            )
-            for chunk in response:
-                if chunk.text:
-                    q.put(chunk.text)
-        except Exception as exc:
-            q.put(exc)
-        finally:
-            q.put(_DONE)
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    loop = asyncio.get_running_loop()
-    while True:
-        item = await loop.run_in_executor(None, q.get)
-        if item is _DONE:
-            break
-        if isinstance(item, Exception):
-            raise item
-        yield item
-
-
-async def _stream_ai_html_claude(
-    system_prompt: str, user_text: str
-) -> AsyncGenerator[str, None]:
-    """Stream HTML tokens from Claude."""
-    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-    with client.messages.stream(
-        model="claude-sonnet-4-5",
-        max_tokens=6000,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_text}],
-    ) as stream:
-        for chunk in stream.text_stream:
-            yield chunk
-
-
-def _get_html_ai_stream(
-    system_prompt: str, user_text: str
-) -> AsyncGenerator[str, None]:
-    """Route to Gemini (dev) or Claude (prod)."""
-    provider = (settings.AI_PROVIDER or "gemini").lower()
-    if provider == "claude":
-        return _stream_ai_html_claude(system_prompt, user_text)
-    return _stream_ai_html_gemini(system_prompt, user_text)
 
 
 def _fields_to_html(fields: dict, doc_type: str) -> str:
@@ -434,7 +301,7 @@ def _fields_to_html(fields: dict, doc_type: str) -> str:
             return f"<ul>{items}</ul>" if items else ""
         if isinstance(v, dict):
             rows = "".join(
-                f"<p><strong>{k.replace('_',' ').title()}:</strong> {val}</p>"
+                f"<p><strong>{k.replace('_', ' ').title()}:</strong> {val}</p>"
                 for k, val in v.items()
                 if val
             )
@@ -550,8 +417,13 @@ class ExtractionService:
 
         await self._require_edit(doc.case_id, user)
 
-        if not doc.ocr_raw_text:
-            raise ValidationError("OCR not completed")
+        input_text = (
+            doc.reviewed_content or doc.source_text or doc.ocr_raw_text or ""
+        ).strip()
+        if not input_text:
+            raise ValidationError(
+                "Document text is not available. Process the document first."
+            )
 
         extraction = await self.repo.get_by_document(document_id)
         if extraction and extraction.extraction_status == ExtractionStatus.processing:
@@ -581,8 +453,14 @@ class ExtractionService:
     # ─────────────────────────────
     async def process_extraction(self, document_id: uuid.UUID):
         doc = await self.doc_repo.get_by_id(document_id)
-        if not doc or not doc.ocr_raw_text:
+        if not doc:
             raise RuntimeError("Invalid document")
+
+        input_text = (
+            doc.reviewed_content or doc.source_text or doc.ocr_raw_text or ""
+        ).strip()
+        if not input_text:
+            raise RuntimeError("Document text is not available")
 
         extraction = await self.repo.create_or_get(
             document_id=document_id,
@@ -592,7 +470,7 @@ class ExtractionService:
         await self.repo.mark_processing(extraction)
 
         fields, raw, confidence = await _extract_fields_via_ai(
-            doc.ocr_raw_text,
+            input_text,
             doc.document_type,
         )
 
@@ -618,28 +496,6 @@ class ExtractionService:
     # ─────────────────────────────
     # Typed Version
     # ─────────────────────────────
-    async def trigger_typing(self, document_id, user):
-        doc = await self.doc_repo.get_by_id(document_id)
-        if not doc:
-            raise NotFoundError("Document not found")
-
-        await self._require_edit(doc.case_id, user)
-
-        if not doc.ocr_raw_text:
-            raise ValidationError("OCR not completed")
-
-        from app.workers.typing_tasks import run_type_document
-
-        try:
-            task = run_type_document.delay(str(document_id))
-        except Exception as exc:
-            logger.exception("Failed to queue typing task for document %s", document_id)
-            raise ValidationError(
-                "Typing worker is not available. Start Redis/Celery and retry."
-            ) from exc
-
-        return {"job_id": task.id}
-
     async def get_typed_version(self, document_id, user):
         doc = await self.doc_repo.get_by_id(document_id)
         if not doc:
@@ -763,109 +619,6 @@ class ExtractionService:
 
         await self.db.commit()
         return TypedVersionResponse.model_validate(typed)
-
-    # ─────────────────────────────
-    # AI HTML Extraction (streaming)
-    # ─────────────────────────────
-
-    async def run_ai_extraction_stream(
-        self,
-        document_id: uuid.UUID,
-        user: User,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Stream structured HTML extracted from the document content.
-        Uses document-type-specific prompts (FIR, court order, etc.).
-        Saves result as TypedVersion on completion.
-
-        Text priority:
-          1. Existing TypedVersion content (user-edited OCR)
-          2. Raw OCR text
-          3. Direct PDF text extraction via PyMuPDF (for digital/skip-OCR docs)
-        """
-        import re as _re
-        from app.features.extraction.models import ReviewStatus
-
-        doc = await self.doc_repo.get_by_id(document_id)
-        if not doc:
-            raise NotFoundError("Document not found")
-
-        await self._require_edit(doc.case_id, user)
-
-        # ── 1. Get best text input ──────────────────────────────
-        typed = await self.repo.get_typed_version(document_id)
-        if typed and typed.typed_content and typed.typed_content.strip():
-            # Strip HTML tags to get plain text for the AI
-            input_text = _re.sub(r"<[^>]+>", " ", typed.typed_content).strip()
-        elif doc.ocr_raw_text and doc.ocr_raw_text.strip():
-            input_text = doc.ocr_raw_text.strip()
-        elif (
-            doc.ocr_status == OcrStatus.not_required
-            and doc.mime_type == "application/pdf"
-        ):
-            # Digital PDF — extract text directly
-            try:
-                input_text = await _extract_pdf_text(doc.r2_bucket, doc.r2_key)
-            except Exception as exc:
-                logger.error(
-                    "PDF text extraction failed for doc %s: %s", document_id, exc
-                )
-                yield "event: error\ndata: Could not extract text from the PDF. Check that the document is a searchable PDF.\n\n"
-                return
-        else:
-            yield "event: error\ndata: No text content available. Run OCR first or ensure the document is a searchable digital PDF.\n\n"
-            return
-
-        if not input_text.strip():
-            yield "event: error\ndata: Document appears to be empty or has no extractable text.\n\n"
-            return
-
-        # ── 2. Load prompt ──────────────────────────────────────
-        prompt_path = HTML_EXTRACTION_PROMPT_MAP.get(
-            doc.document_type, "typing/generic_document_html.txt"
-        )
-        system_prompt = _load_prompt(prompt_path)
-        user_message = f"Convert this document into structured HTML:\n\n{input_text}"
-
-        # ── 3. Stream HTML ──────────────────────────────────────
-        full_html = ""
-        try:
-            async for chunk in _get_html_ai_stream(system_prompt, user_message):
-                full_html += chunk
-                # Escape newlines so SSE data lines are single-line
-                escaped = chunk.replace("\n", "\\n")
-                yield f"data: {escaped}\n\n"
-        except Exception as exc:
-            logger.error("AI extraction stream failed for doc %s: %s", document_id, exc)
-            yield f"event: error\ndata: {str(exc)}\n\n"
-            return
-
-        # ── 4. Save as TypedVersion ─────────────────────────────
-        try:
-            existing = await self.repo.get_typed_version(document_id)
-            if existing is None:
-                existing = await self.repo.create_or_update_typed_version(
-                    document_id=document_id,
-                    typed_content=full_html,
-                    raw_ai_response=full_html,
-                )
-            else:
-                existing = await self.repo.review_typed_version(
-                    existing,
-                    typed_content=full_html,
-                    status=ReviewStatus.edited,
-                    reviewed_by=user.id,
-                )
-
-            if doc.review_status != DocReviewStatus.pushed:
-                doc.review_status = DocReviewStatus.reviewed
-            await self.db.commit()
-        except Exception as exc:
-            logger.error(
-                "Failed to save AI extraction result for doc %s: %s", document_id, exc
-            )
-
-        yield "data: [DONE]\n\n"
 
     # ─────────────────────────────
     # Save TypedVersion + Push to Context

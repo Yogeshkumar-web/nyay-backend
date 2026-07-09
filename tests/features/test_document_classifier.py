@@ -14,8 +14,10 @@ from app.features.documents.digital_extractor import (
 )
 from app.features.documents.document_classifier import classify_document
 from app.features.documents.models import ProcessingRoute
-from app.features.documents.document_ai_service import DocumentAiResult
-from app.features.documents.document_processing_service import process_document_bytes
+from app.features.documents.document_processing_service import (
+    OcrResult,
+    process_document_bytes,
+)
 
 
 def _pdf_bytes(*page_texts: str) -> bytes:
@@ -119,18 +121,18 @@ class _FakeOcrService:
         mime_type: str,
         *,
         original_page_numbers: tuple[int, ...] | None = None,
-    ) -> DocumentAiResult:
+    ) -> OcrResult:
         self.calls.append((mime_type, original_page_numbers))
         page_numbers = original_page_numbers or (1,)
         pages = [
             {
                 "page_number": page_number,
-                "source": "google_document_ai",
+                "source": "fake_ocr",
                 "text": f"OCR page {page_number}",
             }
             for page_number in page_numbers
         ]
-        return DocumentAiResult(
+        return OcrResult(
             text="\n\n".join(page["text"] for page in pages),
             language="hi",
             page_count=len(pages),

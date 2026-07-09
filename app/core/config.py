@@ -61,13 +61,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────
     # Google Cloud
     # ─────────────────────────────────────────────
-    GOOGLE_PROJECT_ID: str = ""
-    GOOGLE_LOCATION: str = "us"
-    GOOGLE_DOCAI_PROCESSOR_ID: str = ""
-    GOOGLE_DOCAI_FIR_PROCESSOR_ID: str = ""
-    GOOGLE_APPLICATION_CREDENTIALS: str = ""
     GOOGLE_CLIENT_ID: str = ""
-    GOOGLE_VISION_API_KEY: str = ""
 
     # ─────────────────────────────────────────────
     # AI Provider
@@ -194,11 +188,7 @@ settings.validate_production()
 #     R2_BUCKET_NAME: str = "vakilsuite-dev"
 
 #     # Google Cloud & OAuth
-#     GOOGLE_PROJECT_ID: str = ""
-#     GOOGLE_LOCATION: str = "us"
-#     GOOGLE_DOCAI_PROCESSOR_ID: str = ""
 #     GOOGLE_CLIENT_ID: str = ""
-#     GOOGLE_VISION_API_KEY: str = ""
 
 #     # Anthropic
 #     ANTHROPIC_API_KEY: str = ""

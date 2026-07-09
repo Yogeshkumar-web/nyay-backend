@@ -29,5 +29,12 @@ from app.features.drafts.models import Draft, DraftExport  # noqa: F401
 from app.features.notifications.models import Notification  # noqa: F401
 from app.features.cause_listings.models import CauseListing  # noqa: F401
 from app.features.courtroom.models import CourtroomSession  # noqa: F401
+from app.features.rag.models import (  # noqa: F401
+    DraftSectionSource,
+    RagChunk,
+    RagDocument,
+    RagQueryLog,
+    RagVerifiedCitation,
+)
 
 __all__ = ["Base"]
