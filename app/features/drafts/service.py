@@ -10,13 +10,23 @@ from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.features.cases.repository import CaseRepository
 from app.features.context.repository import ContextRepository
-from app.features.drafts.models import DraftStatus, DraftType
+from app.features.drafts.models import Draft, DraftStatus, DraftType
 from app.features.drafts.repository import DraftRepository
 from app.features.drafts.schemas import (
     CreateDraftRequest,
     DraftResponse,
+    ReviewDraftRequest,
     UpdateDraftRequest,
 )
+from app.features.rag.repository import RagRepository
+from app.features.rag.schemas import (
+    CitedJudgment,
+    DraftAssemblyRequest,
+    DraftAssemblySection,
+    RagObservabilityEventCreate,
+    RagGenerateSectionRequest,
+)
+from app.features.rag.service import RagService
 from app.features.users.models import User
 
 
@@ -176,6 +186,74 @@ def _build_user_message(
     )
 
 
+def _flatten_context_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        return "\n".join(_flatten_context_text(item) for item in value)
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            text = _flatten_context_text(item)
+            if text:
+                parts.append(f"{key}: {text}")
+        return "\n".join(parts)
+    return str(value)
+
+
+def _extract_sections_invoked(value: object) -> list[str]:
+    matches: list[str] = []
+
+    def walk(item: object) -> None:
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                key_text = str(key).lower()
+                if any(token in key_text for token in ("section", "act", "ipc", "crpc")):
+                    text = _flatten_context_text(nested)
+                    if text:
+                        matches.append(text)
+                walk(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                walk(nested)
+
+    walk(value)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for match in matches:
+        normalized = " ".join(match.split())
+        if normalized and normalized.lower() not in seen:
+            deduped.append(normalized)
+            seen.add(normalized.lower())
+    return deduped[:20]
+
+
+def _unique_citations(citations: list[CitedJudgment]) -> list[CitedJudgment]:
+    seen: set[str] = set()
+    unique: list[CitedJudgment] = []
+    for citation in citations:
+        key = "|".join(
+            [
+                citation.case_name.lower().strip(),
+                (citation.citation or "").lower().strip(),
+                str(citation.year or ""),
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(citation)
+    return unique
+
+
+def _compact_sse_payload(content: str) -> str:
+    return " ".join(line.strip() for line in content.splitlines() if line.strip())
+
+
 # ============================================================
 # SERVICE
 # ============================================================
@@ -250,6 +328,26 @@ class DraftService:
         context = await self.context_repo.get_context(draft.case_id)
         summary = await self.context_repo.get_summary(draft.case_id)
 
+        if draft.draft_type == DraftType.anticipatory_bail:
+            try:
+                full_content = await self._generate_rag_anticipatory_bail_draft(
+                    draft=draft,
+                    user=user,
+                    context_json=context.context_json if context else {},
+                    summary_text=summary.summary_text if summary else "",
+                )
+                yield f"data: {_compact_sse_payload(full_content)}\n\n"
+                await self.repo.set_content(draft, full_content, DraftStatus.ready)
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                await self.repo.set_content(
+                    draft,
+                    "RAG draft generation failed.",
+                    DraftStatus.editing,
+                )
+                yield f"event: error\ndata: {str(e)}\n\n"
+            return
+
         system_prompt = _load_prompt(
             draft.ai_prompt_used or "drafts/bail_application.txt"
         )
@@ -280,6 +378,71 @@ class DraftService:
         await self.repo.set_content(draft, full_content, DraftStatus.ready)
         yield "data: [DONE]\n\n"
 
+    async def _generate_rag_anticipatory_bail_draft(
+        self,
+        *,
+        draft: Draft,
+        user: User,
+        context_json: dict,
+        summary_text: str,
+    ) -> str:
+        rag = RagService(RagRepository(self.db))
+        case_facts = "\n\n".join(
+            part
+            for part in (
+                summary_text.strip(),
+                _flatten_context_text(context_json).strip(),
+            )
+            if part
+        )
+        if len(case_facts) < 20:
+            raise ValidationError("Not enough reviewed case facts for RAG draft generation.")
+
+        sections_invoked = _extract_sections_invoked(context_json)
+        generated_sections: list[DraftAssemblySection] = []
+        citations: list[CitedJudgment] = []
+
+        for section in ("facts", "grounds", "prayer"):
+            response = await rag.generate_section(
+                lawyer_id=user.id,
+                request=RagGenerateSectionRequest(
+                    case_facts=case_facts,
+                    sections_invoked=sections_invoked,
+                    target_section=section,
+                    case_id=draft.case_id,
+                    draft_id=draft.id,
+                    draft_type=draft.draft_type.value,
+                ),
+            )
+            if response.status != "generated" or not response.content:
+                raise ValidationError(
+                    response.refusal_reason
+                    or f"RAG generation refused for {section} section."
+                )
+            generated_sections.append(
+                DraftAssemblySection(
+                    section=section,
+                    content=response.content,
+                    source_chunk_ids=response.source_chunk_ids,
+                    confidence_score=response.confidence_score,
+                )
+            )
+            citations.extend(response.cited_judgments)
+
+        assembly = await rag.assemble_draft(
+            request=DraftAssemblyRequest(
+                case_metadata={
+                    "draft_title": draft.title,
+                    "case_id": str(draft.case_id),
+                    "lawyer_id": str(user.id),
+                    "sections_invoked": ", ".join(sections_invoked),
+                },
+                sections=generated_sections,
+                verified_citations=_unique_citations(citations),
+            )
+        )
+        return assembly.html
+
     # ------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------
@@ -306,7 +469,73 @@ class DraftService:
 
         await self._require_edit(draft.case_id, user)
 
+        previous_content = draft.content or ""
         draft = await self.repo.update(draft, data)
+        if data.content is not None and data.content != previous_content:
+            await RagRepository(self.db).create_observability_event(
+                RagObservabilityEventCreate(
+                    lawyer_id=user.id,
+                    case_id=draft.case_id,
+                    draft_id=draft.id,
+                    event_type="lawyer_edit_detected",
+                    severity="info",
+                    metrics={
+                        "previous_content_chars": len(previous_content),
+                        "new_content_chars": len(data.content),
+                        "delta_chars": len(data.content) - len(previous_content),
+                    },
+                    metadata={"status": draft.status.value},
+                )
+            )
+        return DraftResponse.model_validate(draft)
+
+    async def review_draft(
+        self, draft_id: uuid.UUID, data: ReviewDraftRequest, user: User
+    ):
+        draft = await self.repo.get_by_id(draft_id, for_update=True)
+        if not draft:
+            raise NotFoundError("Draft not found")
+
+        await self._require_edit(draft.case_id, user)
+
+        draft = await self.repo.mark_reviewed_final(
+            draft,
+            reviewed_by=user.id,
+            content=data.content,
+            title=data.title,
+        )
+        await RagRepository(self.db).create_observability_event(
+            RagObservabilityEventCreate(
+                lawyer_id=user.id,
+                case_id=draft.case_id,
+                draft_id=draft.id,
+                event_type="draft_reviewed",
+                severity="info",
+                metrics={"content_chars": len(data.content), "revision": draft.revision},
+                metadata={"status": draft.status.value},
+            )
+        )
+        return DraftResponse.model_validate(draft)
+
+    async def mark_exported(self, draft_id: uuid.UUID, user: User):
+        draft = await self.repo.get_by_id(draft_id, for_update=True)
+        if not draft:
+            raise NotFoundError("Draft not found")
+
+        await self._require_edit(draft.case_id, user)
+
+        draft = await self.repo.mark_exported(draft, exported_by=user.id)
+        await RagRepository(self.db).create_observability_event(
+            RagObservabilityEventCreate(
+                lawyer_id=user.id,
+                case_id=draft.case_id,
+                draft_id=draft.id,
+                event_type="draft_exported",
+                severity="info",
+                metrics={"revision": draft.revision},
+                metadata={"status": draft.status.value},
+            )
+        )
         return DraftResponse.model_validate(draft)
 
     async def fork_draft(self, draft_id: uuid.UUID, user: User):

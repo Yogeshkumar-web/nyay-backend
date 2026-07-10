@@ -36,6 +36,7 @@ from app.features.exports.router import router as exports_router
 from app.features.cause_listings.router import router as cause_listings_router
 from app.features.courtroom.router import router as courtroom_router
 from app.features.notifications.router import router as notifications_router
+from app.features.rag.router import router as rag_router
 
 
 @asynccontextmanager
@@ -102,6 +103,7 @@ app.include_router(exports_router, prefix=API_PREFIX)
 app.include_router(cause_listings_router, prefix=API_PREFIX)
 app.include_router(courtroom_router, prefix=API_PREFIX)
 app.include_router(notifications_router, prefix=API_PREFIX)
+app.include_router(rag_router, prefix=API_PREFIX)
 
 
 @app.get("/health", tags=["Health"])

@@ -71,6 +71,28 @@ class UpdateDraftRequest(BaseModel):
         return v
 
 
+class ReviewDraftRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=MAX_CONTENT_LENGTH)
+    title: Optional[str] = Field(default=None, max_length=MAX_TITLE_LENGTH)
+
+    @field_validator("content")
+    @classmethod
+    def validate_reviewed_content(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Reviewed content cannot be empty")
+        return v
+
+    @field_validator("title")
+    @classmethod
+    def validate_review_title(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            v = v.strip()
+            if not v:
+                raise ValueError("Title cannot be empty")
+        return v
+
+
 # ============================================================
 # RESPONSE SCHEMAS
 # ============================================================
@@ -89,6 +111,11 @@ class DraftResponse(BaseModel):
     status: DraftStatus
     generated_by_ai: bool
     parent_draft_id: Optional[uuid.UUID]
+    reviewed_by: Optional[uuid.UUID]
+    reviewed_at: Optional[datetime]
+    final_accepted_at: Optional[datetime]
+    exported_by: Optional[uuid.UUID]
+    exported_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 

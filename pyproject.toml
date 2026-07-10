@@ -30,6 +30,7 @@ dependencies = [
     "rapidfuzz>=3.14.5",
     "redis>=7.4.0",
     "sentry-sdk[fastapi]>=2.58.0",
+    "sentence-transformers>=5.1.2",
     "sqlalchemy[asyncio]>=2.0.49",
     "uvicorn[standard]>=0.44.0",
     "xhtml2pdf>=0.2.17",

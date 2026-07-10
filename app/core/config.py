@@ -95,6 +95,21 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"  # gpt-4o-mini (cheap), gpt-4o (quality)
 
     # ─────────────────────────────────────────────
+    # RAG / Document Intelligence
+    # ─────────────────────────────────────────────
+    RAG_EMBEDDING_MODEL: str = (
+        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    )
+    RAG_EMBEDDING_DIMENSIONS: int = 768
+
+    SARVAM_API_KEY: str = ""
+    SARVAM_BASE_URL: str = "https://api.sarvam.ai"
+    SARVAM_DOC_LANGUAGE: str = "hi-IN"
+    SARVAM_DOC_OUTPUT_FORMAT: str = "md"
+    SARVAM_DOC_POLL_INTERVAL_SECONDS: float = 2.0
+    SARVAM_DOC_TIMEOUT_SECONDS: float = 600.0
+
+    # ─────────────────────────────────────────────
     # Sentry
     # ─────────────────────────────────────────────
     SENTRY_DSN: str = ""

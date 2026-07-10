@@ -99,7 +99,7 @@ async def process_document_bytes(
         if classification.pdf is None:
             raise RuntimeError("PDF classification details are missing.")
         scanned_pages = classification.pdf.scanned_pages
-        chunks = build_pdf_chunks(file_bytes, scanned_pages)
+        chunks = build_pdf_chunks(file_bytes, scanned_pages, max_pages=10)
         scanned_artifacts: list[dict[str, Any]] = []
         language = "und"
         for page_numbers, chunk_bytes in chunks:
@@ -115,7 +115,9 @@ async def process_document_bytes(
         text = _join_page_text(pages)
         artifact = {
             "schema_version": 1,
-            "provider": "local_ocr",
+            "provider": scanned_artifacts[0].get("source", "ocr_provider")
+            if scanned_artifacts
+            else "ocr_provider",
             "processor_role": "document_ocr",
             "route": classification.route.value,
             "pages": pages,

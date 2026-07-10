@@ -4,7 +4,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, Response
 
 from app.core.dependencies import CurrentUser, DB
-from app.features.drafts.schemas import CreateDraftRequest, UpdateDraftRequest
+from app.core.exceptions import ValidationError
+from app.features.drafts.models import DraftStatus
+from app.features.drafts.schemas import (
+    CreateDraftRequest,
+    ReviewDraftRequest,
+    UpdateDraftRequest,
+)
 from app.features.drafts.service import DraftService
 from app.features.drafts.export import generate_pdf, generate_docx
 
@@ -141,6 +147,26 @@ async def update_draft(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/drafts/{draft_id}/review", summary="Confirm lawyer review")
+async def review_draft(
+    draft_id: uuid.UUID,
+    body: ReviewDraftRequest,
+    current_user: CurrentUser,
+    db: DB,
+):
+    try:
+        service = DraftService(db)
+        draft = await service.review_draft(draft_id, body, current_user)
+
+        return {
+            "success": True,
+            "data": {"draft": draft.model_dump()},
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ============================================================
 # FORK DRAFT
 # ============================================================
@@ -212,12 +238,15 @@ async def download_draft(
 
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
+    if draft.status != DraftStatus.final:
+        raise ValidationError("Lawyer review is required before export.")
 
     content = draft.content or ""
     safe_title = draft.title.replace(" ", "_")[:80]
 
     if fmt == "pdf":
         file_bytes = await asyncio.to_thread(generate_pdf, content, draft.title)
+        await service.mark_exported(draft_id, current_user)
         return Response(
             content=file_bytes,
             media_type="application/pdf",
@@ -225,6 +254,7 @@ async def download_draft(
         )
     else:
         file_bytes = await asyncio.to_thread(generate_docx, content, draft.title)
+        await service.mark_exported(draft_id, current_user)
         return Response(
             content=file_bytes,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

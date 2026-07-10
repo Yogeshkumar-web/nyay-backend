@@ -56,6 +56,17 @@ class CitationVerificationStatus(str, enum.Enum):
     rejected = "rejected"
 
 
+class RagObservabilityEventType(str, enum.Enum):
+    retrieval_completed = "retrieval_completed"
+    generation_refused = "generation_refused"
+    generation_completed = "generation_completed"
+    generation_rejected = "generation_rejected"
+    citation_verification_failed = "citation_verification_failed"
+    draft_reviewed = "draft_reviewed"
+    draft_exported = "draft_exported"
+    lawyer_edit_detected = "lawyer_edit_detected"
+
+
 class RagDocument(Base):
     __tablename__ = "rag_documents"
 
@@ -286,3 +297,49 @@ class DraftSectionSource(Base):
 
     draft: Mapped["Draft"] = relationship("Draft")
     lawyer: Mapped["User"] = relationship("User")
+
+
+class RagObservabilityEvent(Base):
+    __tablename__ = "rag_observability_events"
+
+    __table_args__ = (
+        Index("ix_rag_observability_lawyer_created", "lawyer_id", "created_at"),
+        Index("ix_rag_observability_case_created", "case_id", "created_at"),
+        Index("ix_rag_observability_draft", "draft_id"),
+        Index("ix_rag_observability_query_log", "query_log_id"),
+        Index("ix_rag_observability_event_type", "event_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    lawyer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    case_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+    )
+    draft_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("drafts.id", ondelete="CASCADE"),
+    )
+    query_log_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("rag_query_logs.id", ondelete="SET NULL"),
+    )
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    section: Mapped[str | None] = mapped_column(String(100))
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info")
+    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    metadata_: Mapped[dict] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+
+    lawyer: Mapped["User"] = relationship("User")
+    case: Mapped["Case | None"] = relationship("Case")
+    draft: Mapped["Draft | None"] = relationship("Draft")
+    query_log: Mapped["RagQueryLog | None"] = relationship("RagQueryLog")

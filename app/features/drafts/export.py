@@ -7,7 +7,7 @@ import io
 import re
 from bs4 import BeautifulSoup
 from docx import Document
-from docx.shared import Pt, Cm
+from docx.shared import Pt, Twips
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from xhtml2pdf import pisa
 
@@ -95,13 +95,19 @@ def _md_to_html(text: str) -> str:
 # PDF/DOCX CSS
 # ============================================================
 
-_A4_CSS = """
+PAGE_CONFIG = {
+    "size": {"width": 12240, "height": 20160},
+    "margin": {"top": 2160, "bottom": 1440, "left": 2520, "right": 720},
+}
+
+
+_LEGAL_CSS = """
 @page {
-    size: A4;
-    margin-left: 3cm;
-    margin-right: 2cm;
-    margin-top: 2.5cm;
-    margin-bottom: 2.5cm;
+    size: legal;
+    margin-left: 1.75in;
+    margin-right: 0.5in;
+    margin-top: 1.5in;
+    margin-bottom: 1in;
 }
 body {
     font-family: "Times New Roman", Times, serif;
@@ -160,7 +166,7 @@ def generate_pdf(content: str, title: str) -> bytes:
     styled = (
         f"<html><head>"
         f'<meta charset="utf-8"/>'
-        f"<style>{_A4_CSS}</style>"
+        f"<style>{_LEGAL_CSS}</style>"
         f"</head><body>{html_body}</body></html>"
     )
     buf = io.BytesIO()
@@ -174,14 +180,15 @@ def generate_docx(content: str, title: str) -> bytes:
 
     doc = Document()
 
-    # A4 page margins (legal style)
+    # Legal 8.5x14 page setup. Values are kept in twips to match the frontend
+    # review surface and avoid cm/in rounding drift.
     section = doc.sections[0]
-    section.page_width = Cm(21)
-    section.page_height = Cm(29.7)
-    section.left_margin = Cm(3)
-    section.right_margin = Cm(2)
-    section.top_margin = Cm(2.5)
-    section.bottom_margin = Cm(2.5)
+    section.page_width = Twips(PAGE_CONFIG["size"]["width"])
+    section.page_height = Twips(PAGE_CONFIG["size"]["height"])
+    section.top_margin = Twips(PAGE_CONFIG["margin"]["top"])
+    section.bottom_margin = Twips(PAGE_CONFIG["margin"]["bottom"])
+    section.left_margin = Twips(PAGE_CONFIG["margin"]["left"])
+    section.right_margin = Twips(PAGE_CONFIG["margin"]["right"])
 
     # Default paragraph style — Times New Roman 13pt, 1.8 line spacing
     style = doc.styles["Normal"]
@@ -262,8 +269,8 @@ def generate_docx(content: str, title: str) -> bytes:
                 bullet = "•" if tag == "ul" else f"{i}."
                 p = doc.add_paragraph(style="Normal")
                 p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                p.paragraph_format.left_indent = Cm(1.5)
-                p.paragraph_format.first_line_indent = Cm(-0.7)
+                p.paragraph_format.left_indent = Twips(720)
+                p.paragraph_format.first_line_indent = Twips(-360)
                 p.add_run(f"{bullet}  {li.get_text().strip()}")
         else:
             _add_para(el)

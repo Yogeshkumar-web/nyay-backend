@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, List
 
 from sqlalchemy import select
@@ -89,12 +89,58 @@ class DraftRepository:
         if draft.status == DraftStatus.final:
             raise ValueError("Final draft is immutable. Fork instead.")
 
+        if update_data.get("status") == DraftStatus.final:
+            raise ValueError("Use the lawyer review endpoint to finalize a draft.")
+
         for key, value in update_data.items():
             setattr(draft, key, value)
 
         # Increment revision (optimistic concurrency tracking)
         draft.revision += 1
         draft.updated_at = datetime.utcnow()
+
+        await self.session.flush()
+        return draft
+
+    async def mark_reviewed_final(
+        self,
+        draft: Draft,
+        *,
+        reviewed_by: uuid.UUID,
+        content: str,
+        title: str | None = None,
+    ) -> Draft:
+        if draft.status == DraftStatus.archived:
+            raise ValueError("Cannot review archived draft")
+
+        if draft.status == DraftStatus.final:
+            raise ValueError("Draft is already final")
+
+        draft.content = content
+        if title is not None:
+            draft.title = title
+        draft.status = DraftStatus.final
+        draft.reviewed_by = reviewed_by
+        draft.reviewed_at = datetime.now(UTC)
+        draft.final_accepted_at = draft.reviewed_at
+        draft.revision += 1
+        draft.updated_at = datetime.now(UTC)
+
+        await self.session.flush()
+        return draft
+
+    async def mark_exported(
+        self,
+        draft: Draft,
+        *,
+        exported_by: uuid.UUID,
+    ) -> Draft:
+        if draft.status != DraftStatus.final:
+            raise ValueError("Lawyer review is required before export.")
+
+        draft.exported_by = exported_by
+        draft.exported_at = datetime.now(UTC)
+        draft.updated_at = datetime.now(UTC)
 
         await self.session.flush()
         return draft

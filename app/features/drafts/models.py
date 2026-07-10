@@ -123,6 +123,26 @@ class Draft(Base):
         index=True,
     )
 
+    reviewed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True,
+    )
+
+    reviewed_at: Mapped[Optional[datetime]]
+
+    final_accepted_at: Mapped[Optional[datetime]]
+
+    exported_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True,
+    )
+
+    exported_at: Mapped[Optional[datetime]]
+
     # ------------------------
     # Concurrency Control (IMPORTANT)
     # ------------------------
@@ -157,6 +177,16 @@ class Draft(Base):
     author: Mapped["User"] = relationship(
         "User",
         foreign_keys=[created_by],
+    )
+
+    reviewer: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys=[reviewed_by],
+    )
+
+    last_exporter: Mapped[Optional["User"]] = relationship(
+        "User",
+        foreign_keys=[exported_by],
     )
 
     exports: Mapped[List["DraftExport"]] = relationship(
