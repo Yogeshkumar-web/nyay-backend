@@ -1,6 +1,6 @@
 import uuid
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy import select
@@ -8,8 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.features.documents.models import (
     Document,
+    DocumentDocxExport,
+    DocumentPage,
+    DocumentPageStatus,
+    DocumentProcessingRun,
     DocReviewStatus,
     OcrStatus,
+    ProcessingRunStatus,
     ProcessingRoute,
     ProcessingStatus,
     UploadStatus,
@@ -33,6 +38,15 @@ class DocumentRepository:
     async def get_by_id(self, document_id: uuid.UUID) -> Document | None:
         result = await self.session.execute(
             select(Document).where(Document.id == document_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_processing_run_by_job_id(
+        self,
+        job_id: str,
+    ) -> DocumentProcessingRun | None:
+        result = await self.session.execute(
+            select(DocumentProcessingRun).where(DocumentProcessingRun.job_id == job_id)
         )
         return result.scalar_one_or_none()
 
@@ -152,6 +166,125 @@ class DocumentRepository:
         await self.session.flush()
         return doc
 
+    async def create_processing_run(
+        self,
+        doc: Document,
+        *,
+        job_id: str,
+        started_by: uuid.UUID,
+        status: ProcessingRunStatus = ProcessingRunStatus.ocr_running,
+        metadata: dict | None = None,
+    ) -> DocumentProcessingRun:
+        run = DocumentProcessingRun(
+            document_id=doc.id,
+            case_id=doc.case_id,
+            started_by=started_by,
+            job_id=job_id,
+            status=status,
+            metadata_=metadata or {},
+            metrics={},
+        )
+        self.session.add(run)
+        await self.session.flush()
+        return run
+
+    async def update_processing_run(
+        self,
+        run: DocumentProcessingRun | None,
+        *,
+        status: ProcessingRunStatus,
+        error: str | None = None,
+        metrics: dict | None = None,
+        metadata: dict | None = None,
+    ) -> DocumentProcessingRun | None:
+        if run is None:
+            return None
+        run.status = status
+        run.error = error
+        if metrics is not None:
+            run.metrics = metrics
+        if metadata is not None:
+            run.metadata_ = metadata
+        if status in {
+            ProcessingRunStatus.ready_for_review,
+            ProcessingRunStatus.reviewed,
+            ProcessingRunStatus.docx_ready,
+            ProcessingRunStatus.failed,
+        }:
+            run.completed_at = datetime.now(UTC)
+        run.updated_at = datetime.now(UTC)
+        await self.session.flush()
+        return run
+
+    async def replace_run_pages(
+        self,
+        doc: Document,
+        run: DocumentProcessingRun,
+        pages: list[dict],
+    ) -> list[DocumentPage]:
+        existing = await self.session.execute(
+            select(DocumentPage).where(DocumentPage.processing_run_id == run.id)
+        )
+        for page in existing.scalars().all():
+            await self.session.delete(page)
+        created: list[DocumentPage] = []
+        for page_data in pages:
+            page = DocumentPage(
+                document_id=doc.id,
+                processing_run_id=run.id,
+                page_number=page_data["page_number"],
+                source_filename=page_data["source_filename"],
+                mime_type=page_data["mime_type"],
+                checksum_sha256=page_data["checksum_sha256"],
+                size_bytes=page_data["size_bytes"],
+                status=page_data.get("status", DocumentPageStatus.split),
+            )
+            self.session.add(page)
+            created.append(page)
+        await self.session.flush()
+        return created
+
+    async def list_pages_for_run(
+        self,
+        run_id: uuid.UUID,
+    ) -> list[DocumentPage]:
+        result = await self.session.execute(
+            select(DocumentPage)
+            .where(DocumentPage.processing_run_id == run_id)
+            .order_by(DocumentPage.page_number)
+        )
+        return list(result.scalars().all())
+
+    async def mark_run_pages_ocr_running(
+        self,
+        run: DocumentProcessingRun,
+    ) -> None:
+        pages = await self.list_pages_for_run(run.id)
+        for page in pages:
+            page.status = DocumentPageStatus.ocr_running
+            page.error = None
+            page.updated_at = datetime.now(UTC)
+        await self.session.flush()
+
+    async def update_run_page_ocr_results(
+        self,
+        run: DocumentProcessingRun,
+        page_results: list[dict],
+    ) -> None:
+        pages = await self.list_pages_for_run(run.id)
+        pages_by_number = {page.page_number: page for page in pages}
+        for result in page_results:
+            page_number = int(result["page_number"])
+            page = pages_by_number.get(page_number)
+            if page is None:
+                continue
+            page.status = DocumentPageStatus.ocr_completed
+            page.ocr_text = str(result.get("text") or "")
+            page.ocr_artifact = result
+            page.error = None
+            page.updated_at = datetime.now(UTC)
+        await self.session.flush()
+
     async def complete_processing(
         self,
         doc: Document,
@@ -210,6 +343,31 @@ class DocumentRepository:
         doc.updated_at = datetime.utcnow()
         await self.session.flush()
         return doc
+
+    async def record_docx_export(
+        self,
+        doc: Document,
+        *,
+        exported_by: uuid.UUID,
+        filename: str,
+        size_bytes: int,
+        checksum_sha256: str,
+        metadata: dict,
+    ) -> DocumentDocxExport:
+        export = DocumentDocxExport(
+            document_id=doc.id,
+            case_id=doc.case_id,
+            exported_by=exported_by,
+            filename=filename,
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size_bytes=size_bytes,
+            checksum_sha256=checksum_sha256,
+            generator="python_docx_reviewed_document_v1",
+            export_metadata=metadata,
+        )
+        self.session.add(export)
+        await self.session.flush()
+        return export
 
     async def delete(self, doc: Document) -> None:
         await self.session.delete(doc)

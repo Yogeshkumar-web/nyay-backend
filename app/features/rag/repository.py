@@ -14,7 +14,14 @@ from app.features.rag.models import (
     RagVerifiedCitation,
 )
 from app.features.drafts.models import Draft
-from app.features.rag.schemas import RagChunkCreate, RagDocumentCreate, RagObservabilityEventCreate
+from app.features.rag.schemas import (
+    RagChunkCreate,
+    RagDocumentCreate,
+    RagObservabilityEventCreate,
+)
+
+GLOBAL_BASE_SCOPE = "global_base"
+LAWYER_PRIVATE_SCOPE = "lawyer_private"
 
 
 class RagRepository:
@@ -24,15 +31,19 @@ class RagRepository:
     async def get_document_by_hash(
         self,
         *,
-        lawyer_id: uuid.UUID,
+        lawyer_id: uuid.UUID | None,
         file_hash: str,
+        corpus_scope: str = LAWYER_PRIVATE_SCOPE,
     ) -> RagDocument | None:
-        result = await self.session.execute(
-            select(RagDocument).where(
-                RagDocument.lawyer_id == lawyer_id,
-                RagDocument.file_hash == file_hash,
-            )
+        stmt = select(RagDocument).where(
+            RagDocument.file_hash == file_hash,
+            RagDocument.corpus_scope == corpus_scope,
         )
+        if corpus_scope == GLOBAL_BASE_SCOPE:
+            stmt = stmt.where(RagDocument.lawyer_id.is_(None))
+        else:
+            stmt = stmt.where(RagDocument.lawyer_id == lawyer_id)
+        result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def create_document(self, data: RagDocumentCreate) -> RagDocument:
@@ -41,6 +52,7 @@ class RagRepository:
             case_id=data.case_id,
             source_document_id=data.source_document_id,
             draft_type=data.draft_type,
+            corpus_scope=data.corpus_scope,
             file_hash=data.file_hash,
             original_filename=data.original_filename,
             source_kind=data.source_kind,
@@ -68,6 +80,7 @@ class RagRepository:
             lawyer_id=data.lawyer_id,
             case_id=data.case_id,
             draft_type=data.draft_type,
+            corpus_scope=data.corpus_scope,
             section=data.section,
             chunk_text=data.chunk_text,
             summary=data.summary,
@@ -84,14 +97,14 @@ class RagRepository:
     async def list_chunks_for_lawyer(
         self,
         *,
-        lawyer_id: uuid.UUID,
+        lawyer_id: uuid.UUID | None,
         draft_type: str = "anticipatory_bail",
         case_id: uuid.UUID | None = None,
         section: str | None = None,
         limit: int = 20,
     ) -> list[RagChunk]:
         stmt = select(RagChunk).where(
-            RagChunk.lawyer_id == lawyer_id,
+            _accessible_chunk_scope(lawyer_id),
             RagChunk.draft_type == draft_type,
         )
         if case_id is not None:
@@ -113,7 +126,7 @@ class RagRepository:
     ) -> list[tuple[RagChunk, float]]:
         embedding_literal = _pgvector_literal(embedding)
         conditions = [
-            "lawyer_id = :lawyer_id",
+            "(corpus_scope = 'global_base' OR (corpus_scope = 'lawyer_private' AND lawyer_id = :lawyer_id))",
             "draft_type = :draft_type",
             "embedding IS NOT NULL",
         ]
@@ -166,7 +179,7 @@ class RagRepository:
             return []
 
         stmt = select(RagChunk).where(
-            RagChunk.lawyer_id == lawyer_id,
+            _accessible_chunk_scope(lawyer_id),
             RagChunk.draft_type == draft_type,
             or_(*(RagChunk.chunk_text.ilike(f"%{keyword}%") for keyword in cleaned)),
         )
@@ -253,16 +266,27 @@ class RagRepository:
     async def get_verified_citation(
         self,
         *,
-        lawyer_id: uuid.UUID,
+        lawyer_id: uuid.UUID | None,
         normalized_key: str,
+        corpus_scope: str | None = None,
     ) -> RagVerifiedCitation | None:
-        result = await self.session.execute(
-            select(RagVerifiedCitation).where(
-                RagVerifiedCitation.lawyer_id == lawyer_id,
-                RagVerifiedCitation.normalized_key == normalized_key,
-                RagVerifiedCitation.is_active.is_(True),
-            )
+        stmt = select(RagVerifiedCitation).where(
+            RagVerifiedCitation.normalized_key == normalized_key,
+            RagVerifiedCitation.is_active.is_(True),
         )
+        if corpus_scope == GLOBAL_BASE_SCOPE:
+            stmt = stmt.where(
+                RagVerifiedCitation.corpus_scope == GLOBAL_BASE_SCOPE,
+                RagVerifiedCitation.lawyer_id.is_(None),
+            )
+        elif corpus_scope == LAWYER_PRIVATE_SCOPE:
+            stmt = stmt.where(
+                RagVerifiedCitation.corpus_scope == LAWYER_PRIVATE_SCOPE,
+                RagVerifiedCitation.lawyer_id == lawyer_id,
+            )
+        elif lawyer_id is not None:
+            stmt = stmt.where(_accessible_citation_scope(lawyer_id))
+        result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def find_verified_citation(
@@ -276,7 +300,7 @@ class RagRepository:
             return None
         result = await self.session.execute(
             select(RagVerifiedCitation).where(
-                RagVerifiedCitation.lawyer_id == lawyer_id,
+                _accessible_citation_scope(lawyer_id),
                 RagVerifiedCitation.normalized_key.in_(keys),
                 RagVerifiedCitation.is_active.is_(True),
             )
@@ -294,10 +318,12 @@ class RagRepository:
         court: str | None = None,
         source_chunk_id: uuid.UUID | None = None,
         metadata: dict | None = None,
+        corpus_scope: str = LAWYER_PRIVATE_SCOPE,
     ) -> RagVerifiedCitation:
         existing = await self.get_verified_citation(
             lawyer_id=lawyer_id,
             normalized_key=normalized_key,
+            corpus_scope=corpus_scope,
         )
         if existing:
             existing.case_name = case_name
@@ -306,6 +332,7 @@ class RagRepository:
             existing.court = court
             existing.source_chunk_id = source_chunk_id
             existing.is_active = True
+            existing.corpus_scope = corpus_scope
             existing.metadata_ = metadata or {}
             await self.session.flush()
             return existing
@@ -313,6 +340,7 @@ class RagRepository:
         verified = RagVerifiedCitation(
             lawyer_id=lawyer_id,
             normalized_key=normalized_key,
+            corpus_scope=corpus_scope,
             case_name=case_name,
             citation=citation,
             year=year,
@@ -334,7 +362,7 @@ class RagRepository:
         result = await self.session.execute(
             select(RagVerifiedCitation)
             .where(
-                RagVerifiedCitation.lawyer_id == lawyer_id,
+                _accessible_citation_scope(lawyer_id),
                 RagVerifiedCitation.is_active.is_(True),
             )
             .order_by(RagVerifiedCitation.created_at.desc())
@@ -399,3 +427,23 @@ class RagRepository:
 
 def _pgvector_literal(embedding: Sequence[float]) -> str:
     return "[" + ",".join(f"{float(value):.8f}" for value in embedding) + "]"
+
+
+def _accessible_chunk_scope(lawyer_id: uuid.UUID):
+    return or_(
+        RagChunk.corpus_scope == GLOBAL_BASE_SCOPE,
+        (
+            (RagChunk.corpus_scope == LAWYER_PRIVATE_SCOPE)
+            & (RagChunk.lawyer_id == lawyer_id)
+        ),
+    )
+
+
+def _accessible_citation_scope(lawyer_id: uuid.UUID):
+    return or_(
+        RagVerifiedCitation.corpus_scope == GLOBAL_BASE_SCOPE,
+        (
+            (RagVerifiedCitation.corpus_scope == LAWYER_PRIVATE_SCOPE)
+            & (RagVerifiedCitation.lawyer_id == lawyer_id)
+        ),
+    )

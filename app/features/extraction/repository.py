@@ -138,7 +138,7 @@ class ExtractionRepository:
         extraction.reviewed_at = datetime.utcnow()
         extraction.updated_at = datetime.utcnow()
 
-        # Persist user's Tiptap edits to formatted_content when provided
+        # Persist user's reviewed content when provided.
         if formatted_content is not None:
             extraction.formatted_content = formatted_content
 

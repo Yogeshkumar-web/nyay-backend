@@ -41,6 +41,11 @@ class RagProcessingStatus(str, enum.Enum):
     failed = "failed"
 
 
+class RagCorpusScope(str, enum.Enum):
+    global_base = "global_base"
+    lawyer_private = "lawyer_private"
+
+
 class RagSection(str, enum.Enum):
     facts = "facts"
     grounds = "grounds"
@@ -71,9 +76,15 @@ class RagDocument(Base):
     __tablename__ = "rag_documents"
 
     __table_args__ = (
-        UniqueConstraint("lawyer_id", "file_hash", name="uq_rag_document_lawyer_hash"),
+        UniqueConstraint(
+            "lawyer_id",
+            "file_hash",
+            "corpus_scope",
+            name="uq_rag_document_lawyer_hash",
+        ),
         Index("ix_rag_documents_lawyer", "lawyer_id"),
         Index("ix_rag_documents_case", "case_id"),
+        Index("ix_rag_documents_scope", "corpus_scope"),
         Index("ix_rag_documents_lawyer_draft", "lawyer_id", "draft_type"),
         Index("ix_rag_documents_status", "processing_status"),
     )
@@ -81,10 +92,10 @@ class RagDocument(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    lawyer_id: Mapped[uuid.UUID] = mapped_column(
+    lawyer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     case_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -96,6 +107,9 @@ class RagDocument(Base):
     )
     draft_type: Mapped[str] = mapped_column(
         String(100), nullable=False, default="anticipatory_bail"
+    )
+    corpus_scope: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=RagCorpusScope.lawyer_private.value
     )
     file_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(500))
@@ -131,6 +145,7 @@ class RagChunk(Base):
         Index("ix_rag_chunks_document", "document_id"),
         Index("ix_rag_chunks_lawyer", "lawyer_id"),
         Index("ix_rag_chunks_case", "case_id"),
+        Index("ix_rag_chunks_scope", "corpus_scope"),
         Index("ix_rag_chunks_lawyer_draft", "lawyer_id", "draft_type"),
         Index("ix_rag_chunks_lawyer_section", "lawyer_id", "section"),
     )
@@ -143,10 +158,10 @@ class RagChunk(Base):
         ForeignKey("rag_documents.id", ondelete="CASCADE"),
         nullable=False,
     )
-    lawyer_id: Mapped[uuid.UUID] = mapped_column(
+    lawyer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     case_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -154,6 +169,9 @@ class RagChunk(Base):
     )
     draft_type: Mapped[str] = mapped_column(
         String(100), nullable=False, default="anticipatory_bail"
+    )
+    corpus_scope: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=RagCorpusScope.lawyer_private.value
     )
     section: Mapped[RagSection] = mapped_column(
         String(50), nullable=False, default=RagSection.other.value
@@ -189,7 +207,7 @@ class RagQueryLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    lawyer_id: Mapped[uuid.UUID] = mapped_column(
+    lawyer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
@@ -218,9 +236,11 @@ class RagVerifiedCitation(Base):
         UniqueConstraint(
             "lawyer_id",
             "normalized_key",
+            "corpus_scope",
             name="uq_rag_verified_citation_lawyer_key",
         ),
         Index("ix_rag_verified_citations_lawyer", "lawyer_id"),
+        Index("ix_rag_verified_citations_scope", "corpus_scope"),
         Index("ix_rag_verified_citations_case_name", "case_name"),
         Index("ix_rag_verified_citations_citation", "citation"),
         Index("ix_rag_verified_citations_active", "is_active"),
@@ -232,9 +252,12 @@ class RagVerifiedCitation(Base):
     lawyer_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     normalized_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    corpus_scope: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=RagCorpusScope.lawyer_private.value
+    )
     case_name: Mapped[str] = mapped_column(String(500), nullable=False)
     citation: Mapped[str | None] = mapped_column(String(255))
     year: Mapped[int | None] = mapped_column(Integer)

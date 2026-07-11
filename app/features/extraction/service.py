@@ -211,7 +211,7 @@ def _get_r2_client_extraction():
 
 def _fields_to_html(fields: dict, doc_type: str) -> str:
     """
-    Convert extracted JSON fields to an HTML string suitable for Tiptap.
+    Convert extracted JSON fields to a simple review document.
     Grouped into logical sections based on field name patterns.
     """
     if not fields:
@@ -474,7 +474,7 @@ class ExtractionService:
             doc.document_type,
         )
 
-        # Generate HTML for the Tiptap review editor
+        # Generate simple review content for the form-based reviewer.
         try:
             formatted_content = _fields_to_html(fields, doc.document_type.value)
         except Exception as fmt_exc:
@@ -537,7 +537,7 @@ class ExtractionService:
         user: User,
     ) -> TypedVersionResponse:
         """
-        Tiptap auto-save and manual save endpoint.
+        Text auto-save and manual save endpoint.
 
         - Always sets TypedVersion.status = 'edited'
         - Sets Document.review_status = 'reviewed' so the document
@@ -633,7 +633,7 @@ class ExtractionService:
         """
         Atomically:
           1. Save html_content as TypedVersion (status=edited)
-          2. Push the HTML to context_json[doc_id] as a rich-text entry
+          2. Push the reviewed content to context_json[doc_id]
 
         This replaces the old push_to_context which pushed raw text.
         """

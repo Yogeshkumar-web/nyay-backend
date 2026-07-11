@@ -176,7 +176,7 @@ async def review_typed_version(
 
 @router.patch(
     "/documents/{document_id}/typed-version",
-    summary="Save Tiptap editor content (auto-save and manual save)",
+    summary="Save reviewed typed content (auto-save and manual save)",
 )
 async def save_typed_version(
     document_id: uuid.UUID,
@@ -185,7 +185,7 @@ async def save_typed_version(
     db: DB,
 ):
     """
-    Called by the Tiptap editor on every debounced auto-save and on manual Save click.
+    Called by the review form on debounced auto-save and on manual Save click.
     Always sets status = 'edited'. Also marks Document.review_status = 'reviewed'.
     """
     service = ExtractionService(db)

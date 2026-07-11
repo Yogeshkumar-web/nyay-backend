@@ -1,10 +1,14 @@
 import uuid
 import logging
+import asyncio
+import hashlib
 
 from fastapi import APIRouter
+from fastapi.responses import Response
 
 from app.core.dependencies import CurrentUser, DB
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, ValidationError
+from app.features.drafts.export import generate_reviewed_document_docx
 from app.features.documents.models import UploadStatus
 from app.features.documents.schemas import (
     ConfirmUploadRequest,
@@ -16,6 +20,12 @@ from app.features.documents.service import DocumentService
 
 router = APIRouter(tags=["Documents"])
 logger = logging.getLogger(__name__)
+
+
+def _require_reviewed_content_for_docx(content: str | None) -> str:
+    if not content or not content.strip():
+        raise ValidationError("Save reviewed text before downloading DOCX.")
+    return content
 
 
 # ── Presign ────────────────────────────────────────────────────────────────────
@@ -197,6 +207,53 @@ async def save_review(
     service = DocumentService(db)
     doc = await service.save_review(document_id, body, current_user)
     return {"success": True, "data": {"document": doc.model_dump()}}
+
+
+# ── Code-generated download ───────────────────────────────────────────────────
+
+
+@router.get(
+    "/documents/{document_id}/download/docx",
+    summary="Download reviewed document text as code-formatted DOCX",
+)
+async def download_reviewed_document_docx(
+    document_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: DB,
+):
+    service = DocumentService(db)
+    doc = await service.get_document(document_id, current_user)
+    content = _require_reviewed_content_for_docx(doc.reviewed_content)
+
+    title = doc.display_name or doc.original_filename
+    safe_title = title.replace(" ", "_").replace("/", "_")[:80]
+    structured = (doc.source_artifact or {}).get("structured_extraction")
+    file_bytes = await asyncio.to_thread(
+        generate_reviewed_document_docx,
+        content,
+        title,
+        structured_extraction=structured,
+    )
+    checksum = hashlib.sha256(file_bytes).hexdigest()
+    await service.repo.record_docx_export(
+        doc,
+        exported_by=current_user.id,
+        filename=f"{safe_title}.docx",
+        size_bytes=len(file_bytes),
+        checksum_sha256=checksum,
+        metadata={
+            "source": "document_review_download",
+            "review_status": doc.review_status.value,
+            "has_structured_extraction": structured is not None,
+            "reviewed_content_chars": len(content),
+        },
+    )
+    await db.commit()
+    return Response(
+        content=file_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.docx"'},
+    )
 
 
 # ── Push to context ────────────────────────────────────────────────────────────

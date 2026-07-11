@@ -1,12 +1,15 @@
 """
 Synchronous PDF and DOCX generation from draft content.
-Handles both raw markdown (AI output) and Tiptap HTML (after user save).
+Handles raw text/markdown and legacy HTML, then applies code-controlled formatting.
 Used by the direct download endpoint — no Celery, no R2.
 """
 import io
 import re
+from typing import Any
 from bs4 import BeautifulSoup
 from docx import Document
+from docx.enum.section import WD_SECTION_START
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.shared import Pt, Twips
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from xhtml2pdf import pisa
@@ -35,7 +38,7 @@ def _md_to_html(text: str) -> str:
     Falls through immediately if content already contains HTML tags.
     """
     if re.search(r"<[a-zA-Z][^>]*>", text):
-        return text  # already HTML — from Tiptap save
+        return text  # already HTML from legacy saved content
 
     html_parts: list[str] = []
     # Normalise line endings
@@ -161,7 +164,7 @@ th {
 
 
 def generate_pdf(content: str, title: str) -> bytes:
-    """Convert markdown or Tiptap HTML to A4 PDF using xhtml2pdf."""
+    """Convert reviewed text/markdown/legacy HTML to a code-formatted PDF."""
     html_body = _md_to_html(content)
     styled = (
         f"<html><head>"
@@ -175,7 +178,17 @@ def generate_pdf(content: str, title: str) -> bytes:
 
 
 def generate_docx(content: str, title: str) -> bytes:
-    """Convert markdown or Tiptap HTML to DOCX using python-docx + BeautifulSoup."""
+    """Convert reviewed text/markdown/legacy HTML to a code-formatted DOCX."""
+    return generate_reviewed_document_docx(content, title)
+
+
+def generate_reviewed_document_docx(
+    content: str,
+    title: str,
+    *,
+    structured_extraction: dict[str, Any] | None = None,
+) -> bytes:
+    """Generate a deterministic DOCX from lawyer-reviewed text and extraction hints."""
     html_body = _md_to_html(content)
 
     doc = Document()
@@ -197,6 +210,9 @@ def generate_docx(content: str, title: str) -> bytes:
     para_fmt = style.paragraph_format
     para_fmt.space_after = Pt(6)
     para_fmt.line_spacing = Pt(23)
+
+    _configure_named_styles(doc)
+    _add_document_title(doc, title)
 
     soup = BeautifulSoup(html_body, "html.parser")
     body = soup.body or soup
@@ -273,8 +289,187 @@ def generate_docx(content: str, title: str) -> bytes:
                 p.paragraph_format.first_line_indent = Twips(-360)
                 p.add_run(f"{bullet}  {li.get_text().strip()}")
         else:
-            _add_para(el)
+            _add_reviewed_paragraphs(doc, el, _add_para)
+
+    extraction_result = _structured_result(structured_extraction)
+    if extraction_result:
+        _add_structured_appendix(doc, extraction_result)
 
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
+def _configure_named_styles(doc: Document) -> None:
+    for style_name in ("Normal", "Heading 1", "Heading 2", "Heading 3"):
+        style = doc.styles[style_name]
+        style.font.name = "Times New Roman"
+    for style_name, size in (("Heading 1", 14), ("Heading 2", 13), ("Heading 3", 13)):
+        style = doc.styles[style_name]
+        style.font.size = Pt(size)
+        style.font.bold = True
+        style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        style.paragraph_format.space_before = Pt(10)
+        style.paragraph_format.space_after = Pt(6)
+
+
+def _add_document_title(doc: Document, title: str) -> None:
+    safe_title = (title or "Reviewed Document").strip()
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(10)
+    run = paragraph.add_run(safe_title.upper())
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(14)
+
+
+def _add_reviewed_paragraphs(doc: Document, el, add_para) -> None:
+    text = el.get_text("\n").strip()
+    page_blocks = _split_page_marked_text(text)
+    if not page_blocks:
+        add_para(el)
+        return
+    for block in page_blocks:
+        if block["page_number"] is not None:
+            note = doc.add_paragraph(style="Normal")
+            note.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            note.paragraph_format.space_before = Pt(4)
+            note.paragraph_format.space_after = Pt(2)
+            run = note.add_run(f"Source page {block['page_number']}")
+            run.italic = True
+            run.font.size = Pt(10)
+        for paragraph_text in re.split(r"\n{2,}", block["text"].strip()):
+            if not paragraph_text.strip():
+                continue
+            paragraph = doc.add_paragraph(style="Normal")
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            paragraph.add_run(" ".join(line.strip() for line in paragraph_text.splitlines()))
+
+
+def _split_page_marked_text(text: str) -> list[dict[str, Any]]:
+    marker_re = re.compile(
+        r"\[\[PAGE\s+(\d+)\s+START\]\](.*?)\[\[PAGE\s+\1\s+END\]\]",
+        re.IGNORECASE | re.DOTALL,
+    )
+    matches = list(marker_re.finditer(text))
+    if not matches:
+        return []
+    blocks: list[dict[str, Any]] = []
+    for match in matches:
+        blocks.append(
+            {
+                "page_number": int(match.group(1)),
+                "text": match.group(2).strip(),
+            }
+        )
+    return blocks
+
+
+def _structured_result(structured_extraction: dict[str, Any] | None) -> dict[str, Any]:
+    if not structured_extraction:
+        return {}
+    result = structured_extraction.get("result", structured_extraction)
+    return result if isinstance(result, dict) else {}
+
+
+def _add_structured_appendix(doc: Document, result: dict[str, Any]) -> None:
+    dates = result.get("dates") if isinstance(result.get("dates"), list) else []
+    names = result.get("names") if isinstance(result.get("names"), list) else []
+    warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    unclear = (
+        result.get("unclear_words") if isinstance(result.get("unclear_words"), list) else []
+    )
+    if not dates and not names and not warnings and not unclear:
+        return
+
+    doc.add_section(WD_SECTION_START.NEW_PAGE)
+    heading = doc.add_paragraph()
+    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = heading.add_run("REVIEW TRACE")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(13)
+
+    if names:
+        _add_table(
+            doc,
+            "Names flagged during extraction",
+            ["Name", "Role", "Source pages", "Warning"],
+            [
+                [
+                    str(item.get("raw_text") or ""),
+                    str(item.get("role") or ""),
+                    _pages_text(item.get("source_pages")),
+                    str(item.get("warning") or ""),
+                ]
+                for item in names
+                if isinstance(item, dict)
+            ],
+        )
+    if dates:
+        _add_table(
+            doc,
+            "Dates flagged during extraction",
+            ["Raw date", "Normalized", "Context", "Source pages"],
+            [
+                [
+                    str(item.get("raw_text") or ""),
+                    str(item.get("normalized_date") or ""),
+                    str(item.get("context") or ""),
+                    _pages_text(item.get("source_pages")),
+                ]
+                for item in dates
+                if isinstance(item, dict)
+            ],
+        )
+    if unclear or warnings:
+        _add_table(
+            doc,
+            "Review flags",
+            ["Type", "Value"],
+            [["Unclear word", str(word)] for word in unclear]
+            + [["Warning", str(warning)] for warning in warnings],
+        )
+
+
+def _add_table(
+    doc: Document,
+    title: str,
+    headers: list[str],
+    rows: list[list[str]],
+) -> None:
+    if not rows:
+        return
+    title_p = doc.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    title_run = title_p.add_run(title)
+    title_run.bold = True
+    title_run.font.name = "Times New Roman"
+    title_run.font.size = Pt(12)
+
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
+    for index, header in enumerate(headers):
+        cell = table.rows[0].cells[index]
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+        run = cell.paragraphs[0].add_run(header)
+        run.bold = True
+        run.font.name = "Times New Roman"
+        run.font.size = Pt(10)
+    for row in rows:
+        cells = table.add_row().cells
+        for index, value in enumerate(row):
+            cells[index].vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+            paragraph = cells[index].paragraphs[0]
+            paragraph.paragraph_format.space_after = Pt(0)
+            run = paragraph.add_run(value)
+            run.font.name = "Times New Roman"
+            run.font.size = Pt(10)
+
+
+def _pages_text(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    return ", ".join(str(page) for page in value)

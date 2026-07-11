@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     SARVAM_DOC_OUTPUT_FORMAT: str = "md"
     SARVAM_DOC_POLL_INTERVAL_SECONDS: float = 2.0
     SARVAM_DOC_TIMEOUT_SECONDS: float = 600.0
+    SARVAM_REASONING_MODEL: str = "sarvam-105b"
+    SARVAM_REASONING_EFFORT: str | None = "low"
+    SARVAM_REASONING_MAX_TOKENS: int = 4096
+    SARVAM_REASONING_TIMEOUT_SECONDS: float = 120.0
 
     # ─────────────────────────────────────────────
     # Sentry

@@ -13,9 +13,10 @@ from app.features.rag.chunking import (
     extract_anticipatory_bail_schema,
 )
 from app.features.rag.embedding import HashEmbeddingProvider
-from app.features.rag.ingestion import RagIngestionService
+from app.features.rag.ingestion import GLOBAL_BASE_SCOPE, RagIngestionService
 from app.features.rag.models import RagProcessingStatus, RagSection
 from app.features.documents.sarvam_vision import _extract_zip_output
+from app.features.documents.sarvam_vision import _normalize_sarvam_text
 from app.features.documents.sarvam_vision import _prepare_sarvam_input
 
 
@@ -128,6 +129,33 @@ async def test_ingestion_persists_chunks_with_lawyer_boundary(monkeypatch):
     assert repository.statuses[-1] == RagProcessingStatus.completed
 
 
+@pytest.mark.asyncio
+async def test_text_ingestion_persists_global_base_chunks_without_lawyer():
+    repository = _FakeRagRepository()
+
+    result = await RagIngestionService(
+        repository,
+        HashEmbeddingProvider(),
+    ).ingest_text(
+        text="""
+        Facts
+        Applicant apprehends arrest under Section 438 CrPC.
+
+        Grounds
+        Custodial interrogation is not required.
+        """,
+        original_filename="global.md",
+        corpus_scope=GLOBAL_BASE_SCOPE,
+    )
+
+    assert result.duplicate is False
+    assert result.chunk_count == 2
+    assert repository.created_documents[0].lawyer_id is None
+    assert repository.created_documents[0].corpus_scope == GLOBAL_BASE_SCOPE
+    assert all(chunk.lawyer_id is None for chunk in repository.created_chunks)
+    assert all(chunk.corpus_scope == GLOBAL_BASE_SCOPE for chunk in repository.created_chunks)
+
+
 def test_sarvam_zip_output_extracts_markdown_and_json():
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -138,6 +166,70 @@ def test_sarvam_zip_output_extracts_markdown_and_json():
 
     assert "Extracted legal text" in extracted.text
     assert extracted.json_payload == {"pages": [{"text": "Extracted legal text"}]}
+
+
+def test_sarvam_text_normalization_strips_synthetic_line_numbers():
+    text = "\n".join(
+        [
+            "1. That the applicant has been falsely implicated.",
+            "2. The allegations are general in nature.",
+            "3. Custodial interrogation is not required.",
+            "4. The applicant undertakes to cooperate.",
+            "5. No recovery is to be effected from the applicant.",
+            "6. The applicant has roots in society.",
+            "7. The FIR was lodged after delay.",
+            "8. Bail may kindly be granted.",
+        ]
+    )
+
+    normalized = _normalize_sarvam_text(text)
+
+    assert "1. That the applicant" not in normalized
+    assert normalized.startswith("That the applicant")
+    assert "The FIR was lodged after delay." in normalized
+
+
+def test_sarvam_text_normalization_strips_dense_numbering_with_gaps():
+    text = "\n".join(
+        [
+            "Dw-1",
+            "",
+            "1. That motive is not established.",
+            "2. Sarfaraj Khan stated there was no water in canal.",
+            "3. Therefore question of dispute is absurd.",
+            "4. According to P.W. 3, FIR was scribed on spot.",
+            "5. Man Singh was mentioned by the witness.",
+            "6. The witness met Man Singh in the market.",
+            "7. He described the FIR.",
+            "8. Man Singh was not examined in trial court.",
+            "10. There is no whisper in FIR about canal water.",
+            "11. Later there was improvement in statement.",
+            "12. Motive was not proved before Trial Court.",
+        ]
+    )
+
+    normalized = _normalize_sarvam_text(text)
+
+    assert normalized.startswith("Dw-1\n\nThat motive is not established.")
+    assert "10. There is no whisper" not in normalized
+    assert "There is no whisper in FIR about canal water." in normalized
+
+
+def test_sarvam_text_normalization_preserves_real_paragraph_numbers():
+    text = "\n".join(
+        [
+            "7. That the applicant has been falsely implicated.",
+            "8. That custodial interrogation is not required.",
+            "9. That no recovery is pending.",
+            "10. That the applicant will cooperate.",
+            "11. That the applicant has roots in society.",
+            "12. That bail may kindly be granted.",
+        ]
+    )
+
+    normalized = _normalize_sarvam_text(text)
+
+    assert normalized == text
 
 
 def test_sarvam_image_input_is_wrapped_as_flat_zip():
@@ -156,7 +248,7 @@ class _FakeRagRepository:
         self.created_chunks = []
         self.statuses = []
 
-    async def get_document_by_hash(self, *, lawyer_id, file_hash):
+    async def get_document_by_hash(self, *, lawyer_id, file_hash, corpus_scope="lawyer_private"):
         return self.existing_document
 
     async def create_document(self, data):
@@ -164,6 +256,7 @@ class _FakeRagRepository:
             id=uuid.uuid4(),
             lawyer_id=data.lawyer_id,
             case_id=data.case_id,
+            corpus_scope=data.corpus_scope,
             metadata_=data.metadata,
             processing_status="pending",
             processing_error=None,

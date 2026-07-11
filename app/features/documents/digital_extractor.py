@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import re
 import zipfile
 from dataclasses import dataclass
@@ -42,6 +43,16 @@ class PdfClassification:
             "scanned_pages": list(self.scanned_pages),
             "min_digital_page_chars": MIN_DIGITAL_PAGE_CHARS,
         }
+
+
+@dataclass(frozen=True)
+class PageSplit:
+    page_number: int
+    filename: str
+    mime_type: str
+    content: bytes
+    checksum: str
+    size_bytes: int
 
 
 def validate_file_signature(file_bytes: bytes, mime_type: str) -> None:
@@ -191,6 +202,58 @@ def build_pdf_chunks(
     finally:
         source.close()
     return chunks
+
+
+def split_pdf_pages(file_bytes: bytes) -> list[PageSplit]:
+    try:
+        source = fitz.open(stream=file_bytes, filetype="pdf")
+    except Exception as exc:
+        raise DocumentInputError("PDF is corrupt or unreadable.") from exc
+
+    pages: list[PageSplit] = []
+    try:
+        if source.needs_pass:
+            raise DocumentInputError("Password-protected PDFs are not supported.")
+        if source.page_count == 0:
+            raise DocumentInputError("PDF has no pages.")
+        for index in range(source.page_count):
+            page_number = index + 1
+            page = source.load_page(index)
+            matrix = fitz.Matrix(2, 2)
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            content = pixmap.tobytes("png")
+            pages.append(
+                PageSplit(
+                    page_number=page_number,
+                    filename=f"page_{page_number:04d}.png",
+                    mime_type="image/png",
+                    content=content,
+                    checksum=hashlib.sha256(content).hexdigest(),
+                    size_bytes=len(content),
+                )
+            )
+    finally:
+        source.close()
+    return pages
+
+
+def build_single_image_page(file_bytes: bytes, mime_type: str) -> PageSplit:
+    extension = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/tiff": "tiff",
+        "image/webp": "webp",
+    }.get(mime_type)
+    if extension is None:
+        raise DocumentInputError("Unsupported image type.")
+    return PageSplit(
+        page_number=1,
+        filename=f"page_0001.{extension}",
+        mime_type=mime_type,
+        content=file_bytes,
+        checksum=hashlib.sha256(file_bytes).hexdigest(),
+        size_bytes=len(file_bytes),
+    )
 
 
 def _append_pdf_chunk(

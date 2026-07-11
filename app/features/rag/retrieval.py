@@ -121,7 +121,8 @@ class RagRetrievalService:
             "draft_type": draft_type,
             "case_id": str(case_id) if case_id else None,
             "section": section,
-            "private_corpus_only": True,
+            "corpus_scopes": ["global_base", "lawyer_private"],
+            "lawyer_private_boundary": str(lawyer_id),
         }
 
         embedding = await self._embed_query(normalized_query)
@@ -201,7 +202,7 @@ class RagRetrievalService:
             should_generate=should_generate,
             refusal_reason=None
             if should_generate
-            else "LOW_RAG_CONFIDENCE: internal private KB did not contain enough supporting context.",
+            else "LOW_RAG_CONFIDENCE: global base KB and private lawyer KB did not contain enough supporting context.",
             query_log_id=query_log.id,
             filters=filters,
         )

@@ -16,6 +16,7 @@ from app.features.cases.repository import CaseRepository
 from app.features.documents.models import (
     Document,
     OcrStatus,
+    ProcessingRunStatus,
     ProcessingStatus,
     UploadStatus,
 )
@@ -161,11 +162,18 @@ class DocumentService:
             return False
 
         logger.warning("Marking stale OCR job as failed for document %s", doc.id)
+        message = "OCR worker did not finish in time. Retry OCR."
         await self.repo.set_ocr_status(
             doc,
             OcrStatus.failed,
-            error="OCR worker did not finish in time. Retry OCR.",
+            error=message,
         )
+        await self.repo.fail_processing(doc, error=message)
+        job_id = doc.processing_job_id or doc.ocr_job_id
+        if job_id:
+            from app.workers.job_store import JobStatus, set_job_status
+
+            await set_job_status(job_id, JobStatus.failed, error=message)
         return True
 
     # ── Presign upload ─────────────────────────────────────────────────────────
@@ -242,12 +250,6 @@ class DocumentService:
         doc = await self.repo.confirm_upload(doc, data.is_scanned)
         await self.db.commit()
 
-        try:
-            await self._queue_processing(doc)
-        except ValidationError:
-            logger.exception(
-                "Automatic processing queue failed for uploaded document %s", doc.id
-            )
         response = DocumentResponse.model_validate(doc)
 
         # ─────────────────────────────
@@ -287,9 +289,15 @@ class DocumentService:
 
         await self._require_case_edit(doc.case_id, current_user)
 
-        return await self._queue_processing(doc, force=True)
+        return await self._queue_processing(doc, started_by=current_user.id, force=True)
 
-    async def _queue_processing(self, doc: Document, *, force: bool = False) -> dict:
+    async def _queue_processing(
+        self,
+        doc: Document,
+        *,
+        started_by: uuid.UUID,
+        force: bool = False,
+    ) -> dict:
         from app.workers.document_processing_tasks import process_document
         from app.workers.job_store import JobStatus, set_job_status
 
@@ -300,13 +308,20 @@ class DocumentService:
         job_id = str(uuid.uuid4())
         await self.repo.start_processing(doc, job_id=job_id)
         await self.repo.start_ocr(doc, job_id=job_id)
+        run = await self.repo.create_processing_run(
+            doc,
+            job_id=job_id,
+            started_by=started_by,
+            status=ProcessingRunStatus.ocr_running,
+            metadata={"pipeline": "manual_document_processing_v1"},
+        )
         await self.db.commit()
 
         try:
             await set_job_status(
                 job_id,
                 JobStatus.pending,
-                result={"document_id": str(doc.id)},
+                result={"document_id": str(doc.id), "processing_run_id": str(run.id)},
             )
             process_document.apply_async(args=[str(doc.id)], task_id=job_id)
         except Exception as exc:
@@ -314,9 +329,14 @@ class DocumentService:
             message = "Document worker is not available. Start Redis/Celery and retry."
             await self.repo.fail_processing(doc, error=message)
             await self.repo.set_ocr_status(doc, OcrStatus.failed, error=message)
+            await self.repo.update_processing_run(
+                run,
+                status=ProcessingRunStatus.failed,
+                error=message,
+            )
             await self.db.commit()
             raise ValidationError(message) from exc
-        return {"job_id": job_id}
+        return {"job_id": job_id, "processing_run_id": str(run.id)}
 
     # ── List documents ─────────────────────────────────────────────────────────
 
@@ -331,7 +351,7 @@ class DocumentService:
 
         await self._require_case_edit(doc.case_id, current_user)
 
-        await self._queue_processing(doc, force=True)
+        await self._queue_processing(doc, started_by=current_user.id, force=True)
         return DocumentResponse.model_validate(doc)
 
     async def list_documents(

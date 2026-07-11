@@ -122,14 +122,16 @@ class InternalCitationVerifier:
             court=data.court,
         )
         normalized = self.normalizer.normalize(citation)
+        citation_lawyer_id = None if data.corpus_scope == "global_base" else lawyer_id
         return await self.repository.upsert_verified_citation(
-            lawyer_id=lawyer_id,
+            lawyer_id=citation_lawyer_id,
             normalized_key=normalized.primary_key,
             case_name=data.case_name,
             citation=data.citation,
             year=data.year,
             court=data.court,
             source_chunk_id=data.source_chunk_id,
+            corpus_scope=data.corpus_scope,
             metadata=data.metadata,
         )
 

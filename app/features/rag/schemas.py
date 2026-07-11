@@ -20,10 +20,11 @@ class AnticipatoryBailExtraction(BaseModel):
 
 
 class RagDocumentCreate(BaseModel):
-    lawyer_id: uuid.UUID
+    lawyer_id: uuid.UUID | None
     case_id: uuid.UUID | None = None
     source_document_id: uuid.UUID | None = None
     draft_type: str = "anticipatory_bail"
+    corpus_scope: str = Field(default="lawyer_private", pattern="^(global_base|lawyer_private)$")
     file_hash: str = Field(..., min_length=16, max_length=128)
     original_filename: str | None = None
     source_kind: str = "kb_draft"
@@ -34,10 +35,11 @@ class RagDocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    lawyer_id: uuid.UUID
+    lawyer_id: uuid.UUID | None
     case_id: uuid.UUID | None
     source_document_id: uuid.UUID | None
     draft_type: str
+    corpus_scope: str
     file_hash: str
     original_filename: str | None
     source_kind: str
@@ -50,9 +52,10 @@ class RagDocumentResponse(BaseModel):
 
 class RagChunkCreate(BaseModel):
     document_id: uuid.UUID
-    lawyer_id: uuid.UUID
+    lawyer_id: uuid.UUID | None
     case_id: uuid.UUID | None = None
     draft_type: str = "anticipatory_bail"
+    corpus_scope: str = Field(default="lawyer_private", pattern="^(global_base|lawyer_private)$")
     section: str
     chunk_text: str = Field(..., min_length=1)
     summary: str | None = None
@@ -68,9 +71,10 @@ class RagChunkResponse(BaseModel):
 
     id: uuid.UUID
     document_id: uuid.UUID
-    lawyer_id: uuid.UUID
+    lawyer_id: uuid.UUID | None
     case_id: uuid.UUID | None
     draft_type: str
+    corpus_scope: str
     section: str
     chunk_text: str
     summary: str | None
@@ -144,6 +148,7 @@ class VerifiedCitationCreate(BaseModel):
     year: int | None = Field(default=None, ge=1800, le=2100)
     court: str | None = Field(default=None, max_length=255)
     source_chunk_id: uuid.UUID | None = None
+    corpus_scope: str = Field(default="lawyer_private", pattern="^(global_base|lawyer_private)$")
     metadata: dict = Field(default_factory=dict)
 
 
@@ -151,8 +156,9 @@ class VerifiedCitationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    lawyer_id: uuid.UUID
+    lawyer_id: uuid.UUID | None
     normalized_key: str
+    corpus_scope: str
     case_name: str
     citation: str | None
     year: int | None

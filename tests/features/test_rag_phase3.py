@@ -50,8 +50,41 @@ async def test_retrieval_uses_lawyer_boundary_and_keyword_boost():
     assert result.chunks[0].chunk.id == chunk.id
     assert result.chunks[0].score >= 0.72
     assert result.chunks[0].match_reasons == ["legal_keyword"]
+    assert result.chunks[0].chunk.corpus_scope == "lawyer_private"
     assert repository.seen_lawyer_ids == [lawyer_id, lawyer_id, lawyer_id]
     assert repository.logs[0]["generated"] is True
+    assert repository.logs[0]["filters"]["corpus_scopes"] == [
+        "global_base",
+        "lawyer_private",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_includes_global_base_chunks_for_new_lawyer():
+    lawyer_id = uuid.uuid4()
+    global_chunk = _chunk(
+        lawyer_id=None,
+        text="Global grounds under Section 482 BNSS: applicant may cooperate.",
+        section="grounds",
+        corpus_scope="global_base",
+    )
+    repository = _FakeRetrievalRepository(
+        vector_matches=[],
+        keyword_matches=[global_chunk],
+    )
+
+    result = await RagRetrievalService(
+        repository,
+        HashEmbeddingProvider(),
+    ).retrieve(
+        lawyer_id=lawyer_id,
+        query_text="Need grounds for 482 BNSS anticipatory bail.",
+        section="grounds",
+    )
+
+    assert result.should_generate is True
+    assert result.chunks[0].chunk.lawyer_id is None
+    assert result.chunks[0].chunk.corpus_scope == "global_base"
 
 
 @pytest.mark.asyncio
@@ -93,13 +126,20 @@ async def test_retrieval_uses_cached_embedding_when_available():
     assert cache.set_calls == []
 
 
-def _chunk(*, lawyer_id: uuid.UUID, text: str, section: str = "grounds"):
+def _chunk(
+    *,
+    lawyer_id: uuid.UUID | None,
+    text: str,
+    section: str = "grounds",
+    corpus_scope: str = "lawyer_private",
+):
     return SimpleNamespace(
         id=uuid.uuid4(),
         document_id=uuid.uuid4(),
         lawyer_id=lawyer_id,
         case_id=None,
         draft_type="anticipatory_bail",
+        corpus_scope=corpus_scope,
         section=section,
         chunk_text=text,
         summary=None,

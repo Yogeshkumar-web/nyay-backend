@@ -141,6 +141,7 @@ def _retrieval_response(
         lawyer_id=uuid.uuid4(),
         case_id=None,
         draft_type="anticipatory_bail",
+        corpus_scope="lawyer_private",
         section="grounds",
         chunk_text=source_text,
         summary=None,

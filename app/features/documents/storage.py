@@ -25,3 +25,4 @@ async def read_r2_bytes(bucket: str, key: str) -> bytes:
         return response["Body"].read()
 
     return await asyncio.to_thread(_read)
+

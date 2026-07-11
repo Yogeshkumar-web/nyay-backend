@@ -34,7 +34,7 @@ class ExtractionResultResponse(BaseModel):
 
     extracted_fields: dict[str, Any]
 
-    # HTML content for the Tiptap review editor.
+    # Review content shown in the form-based extraction reviewer.
     # Populated by backend after extraction; updated when user saves edits.
     formatted_content: Optional[str] = None
 
@@ -57,7 +57,7 @@ class ReviewExtractionRequest(BaseModel):
 
     review_status: ReviewStatus
 
-    # Optional: Tiptap HTML saved by the user in ExtractionReviewEditor
+    # Optional reviewed content saved by the user in ExtractionReviewEditor
     formatted_content: Optional[str] = None
 
     @field_validator("extracted_fields")
@@ -108,7 +108,7 @@ class ReviewTypedVersionRequest(BaseModel):
 
 class SaveTypedVersionRequest(BaseModel):
     """
-    Used for Tiptap auto-save and manual save.
+    Used for text auto-save and manual save.
     Status is always set to 'edited' automatically — caller does not choose it.
     No max_length: legal documents (FIR, chargesheet, affidavit) can be very long.
     """

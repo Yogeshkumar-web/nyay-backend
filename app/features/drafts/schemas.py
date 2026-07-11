@@ -11,7 +11,7 @@ from app.features.drafts.models import DraftStatus, DraftType, ExportFormat
 # ============================================================
 
 MAX_TITLE_LENGTH = 500
-MAX_CONTENT_LENGTH = 200_000  # ~200KB safe for Tiptap HTML
+MAX_CONTENT_LENGTH = 200_000  # ~200KB reviewed draft content
 MAX_INSTRUCTIONS_LENGTH = 5_000  # Prevent prompt abuse
 
 
