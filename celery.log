@@ -1,0 +1,26 @@
+ 
+ -------------- celery@YogeshPC v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43 2026-09-12 18:36:10
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         vakilsuite:0x7472b72b9010
+- ** ---------- .> transport:   redis://localhost:6379/0
+- ** ---------- .> results:     redis://localhost:6379/0
+- *** --- * --- .> concurrency: 8 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> celery           exchange=celery(direct) key=celery
+                
+
+[tasks]
+  . app.workers.scraper_tasks.scrape_daily_cause_list
+  . documents.process_document
+  . documents.reconcile_queued_runs
+  . documents.retry_document_page
+  . exports.generate
+  . extraction.run_extraction
+
+[2026-09-12 18:36:11,758: INFO/MainProcess] Connected to redis://localhost:6379/0
+[2026-09-12 18:36:11,766: INFO/MainProcess] mingle: searching for neighbors

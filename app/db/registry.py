@@ -15,7 +15,11 @@ from app.features.cases.models import (  # noqa: F401
     CaseAccess,
     Party,
 )
-from app.features.documents.models import Document  # noqa: F401
+from app.features.documents.models import (  # noqa: F401
+    Document,
+    DocumentDomainEvent,
+    DocumentTypedRevision,
+)
 from app.features.extraction.models import (  # noqa: F401
     ExtractionResult,
     TypedVersion,

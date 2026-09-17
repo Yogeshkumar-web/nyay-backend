@@ -11,6 +11,7 @@ from app.core.exceptions import ValidationError
 from app.features.drafts.export import PAGE_CONFIG, generate_reviewed_document_docx
 from app.features.documents.router import _require_reviewed_content_for_docx
 from app.features.documents.repository import DocumentRepository
+from app.features.documents.canonical_document import build_canonical_document
 
 
 def _open_docx(content: bytes):
@@ -31,9 +32,9 @@ def test_reviewed_docx_uses_legal_page_settings():
 
 
 def test_docx_generation_is_blocked_until_review_content_exists():
-    with pytest.raises(ValidationError, match="Save reviewed text"):
+    with pytest.raises(ValidationError, match="Approve typed text"):
         _require_reviewed_content_for_docx(None)
-    with pytest.raises(ValidationError, match="Save reviewed text"):
+    with pytest.raises(ValidationError, match="Approve typed text"):
         _require_reviewed_content_for_docx("   ")
 
     assert _require_reviewed_content_for_docx("Reviewed text") == "Reviewed text"
@@ -99,6 +100,43 @@ def test_reviewed_docx_appends_structured_review_trace():
     assert "A" in table_text
     assert "10/01/2026" in table_text
     assert "verify spelling" in table_text
+
+
+def test_reviewed_docx_renders_dynamic_canonical_tables_without_source_markers():
+    content = """
+[[PAGE 1 START]]
+# FIRST INFORMATION REPORT
+
+## Accused persons
+
+| S.No. | Name |
+| --- | --- |
+| 1 | A |
+| 2 | B |
+| 3 | C |
+[[PAGE 1 END]]
+""".strip()
+    canonical = build_canonical_document(content, document_type="fir")
+
+    doc = _open_docx(
+        generate_reviewed_document_docx(
+            content,
+            "fir.pdf",
+            canonical_document=canonical.model_dump(mode="json"),
+        )
+    )
+
+    paragraph_text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+    assert "FIRST INFORMATION REPORT" in paragraph_text
+    assert "Accused persons" in paragraph_text
+    assert "Source page" not in paragraph_text
+    assert len(doc.tables) == 1
+    assert [[cell.text for cell in row.cells] for row in doc.tables[0].rows] == [
+        ["S.No.", "Name"],
+        ["1", "A"],
+        ["2", "B"],
+        ["3", "C"],
+    ]
 
 
 @pytest.mark.asyncio

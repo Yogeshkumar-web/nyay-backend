@@ -285,7 +285,7 @@ class DraftService:
 
         context = await self.context_repo.get_context(case_id)
         if not context or not context.context_json:
-            raise ValidationError("No context found. Push documents first.")
+            raise ValidationError("No case context is available for drafting.")
 
         summary = await self.context_repo.get_summary(case_id)
         if summary:

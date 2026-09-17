@@ -16,6 +16,7 @@ from app.features.rag.embedding import HashEmbeddingProvider
 from app.features.rag.ingestion import GLOBAL_BASE_SCOPE, RagIngestionService
 from app.features.rag.models import RagProcessingStatus, RagSection
 from app.features.documents.sarvam_vision import _extract_zip_output
+from app.features.documents.sarvam_vision import _extract_page_texts
 from app.features.documents.sarvam_vision import _normalize_sarvam_text
 from app.features.documents.sarvam_vision import _prepare_sarvam_input
 
@@ -166,6 +167,30 @@ def test_sarvam_zip_output_extracts_markdown_and_json():
 
     assert "Extracted legal text" in extracted.text
     assert extracted.json_payload == {"pages": [{"text": "Extracted legal text"}]}
+
+
+def test_sarvam_zip_output_extracts_all_page_metadata_in_reading_order():
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("document.md", "Combined document text")
+        archive.writestr(
+            "metadata/page_002.json",
+            '{"page_num": 2, "blocks": ['
+            '{"reading_order": 2, "text": "Second B"},'
+            '{"reading_order": 1, "text": "Second A"}]}'
+        )
+        archive.writestr(
+            "metadata/page_001.json",
+            '{"page_num": 1, "blocks": [{"reading_order": 1, "text": "First"}]}'
+        )
+
+    extracted = _extract_zip_output(buffer.getvalue())
+
+    assert isinstance(extracted.json_payload, list)
+    assert _extract_page_texts(extracted.json_payload) == [
+        "First",
+        "Second A\n\nSecond B",
+    ]
 
 
 def test_sarvam_text_normalization_strips_synthetic_line_numbers():

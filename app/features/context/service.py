@@ -3,18 +3,16 @@ import json
 import logging
 import asyncio
 from pathlib import Path
-from typing import Tuple, Dict, Any, List
+from typing import Dict, Any
 
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
 from app.features.cases.repository import CaseRepository
 from app.features.context.repository import ContextRepository
 from app.features.context.schemas import CaseContextResponse, CaseSummaryResponse
-from app.features.extraction.models import ExtractionResult, ReviewStatus
 from app.features.users.models import User
 
 logger = logging.getLogger(__name__)
@@ -158,79 +156,6 @@ class ContextService:
         return CaseContextResponse.model_validate(context)
 
     # ─────────────────────────────
-    # Push
-    # ─────────────────────────────
-    async def push_to_context(
-        self,
-        case_id: uuid.UUID,
-        document_ids: List[uuid.UUID],
-        user: User,
-    ) -> Tuple[CaseContextResponse, CaseSummaryResponse]:
-        await self._require_edit(case_id, user)
-
-        if not document_ids:
-            raise ValidationError("document_ids required")
-
-        # ── Batch fetch (NO N+1) ──
-        stmt = select(ExtractionResult).where(
-            ExtractionResult.document_id.in_(document_ids),
-            ExtractionResult.review_status.in_(
-                [ReviewStatus.accepted, ReviewStatus.edited]
-            ),
-        )
-
-        rows = (await self.db.execute(stmt)).scalars().all()
-
-        if not rows:
-            raise ValidationError("No valid extractions")
-
-        # ── Load existing context ──
-        existing = await self.repo.get_context(case_id)
-        context_json = existing.context_json if existing else {}
-        pushed_docs = existing.pushed_documents if existing else {}
-
-        # ── Merge ──
-        for row in rows:
-            doc_id = str(row.document_id)
-
-            context_json[doc_id] = {
-                "fields": row.extracted_fields,
-                "review_status": row.review_status.value,
-            }
-
-            pushed_docs[doc_id] = {
-                "added_at": __import__("datetime").datetime.utcnow().isoformat()
-            }
-
-        # ── Token control ──
-        context_str = json.dumps(context_json, ensure_ascii=False)
-        tokens = _estimate_tokens(context_str)
-
-        if tokens > MAX_CONTEXT_TOKENS:
-            raise ValidationError("Context too large, trim required")
-
-        # ── Save ──
-        context = await self.repo.upsert_context(
-            case_id=case_id,
-            context_json=context_json,
-            pushed_documents=pushed_docs,
-            token_estimate=tokens,
-        )
-
-        # ── Summary ──
-        summary = await self._generate_summary(case_id, context_json)
-
-        logger.info(
-            "context_push",
-            extra={"case_id": str(case_id), "docs": len(rows)},
-        )
-
-        return (
-            CaseContextResponse.model_validate(context),
-            CaseSummaryResponse.model_validate(summary),
-        )
-
-    # ─────────────────────────────
     # Get Summary
     # ─────────────────────────────
     async def get_summary(self, case_id: uuid.UUID, user: User) -> CaseSummaryResponse:
@@ -261,7 +186,7 @@ class ContextService:
 
         context = await self.repo.get_context(case_id)
         if not context or not context.context_json:
-            raise ValidationError("No context found. Push documents to context first.")
+            raise ValidationError("No case context is available for summarization.")
 
         summary = await self._generate_summary(case_id, context.context_json)
 
@@ -282,7 +207,7 @@ class ContextService:
         user: User,
     ) -> None:
         """
-        Update the HTML content of a specific pushed document in context_json.
+        Update the HTML content of a legacy document entry in context_json.
         This is called when the user edits a document in the context panel and saves.
         """
         await self._require_edit(case_id, user)
@@ -294,7 +219,7 @@ class ContextService:
         context_json = dict(context.context_json or {})
 
         if document_id not in context_json:
-            raise ValidationError("Document not found in context. Push it first.")
+            raise ValidationError("Document not found in the stored case context.")
 
         entry = dict(context_json[document_id])
         entry["content"] = html_content

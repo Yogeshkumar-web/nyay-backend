@@ -12,6 +12,7 @@ from app.features.documents.digital_extractor import (
     validate_file_signature,
 )
 from app.features.documents.models import ProcessingRoute
+from app.core.config import settings
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,10 @@ def classify_document(file_bytes: bytes, mime_type: str) -> Classification:
             details={"classifier": "mime_route_v1", "format": "docx"},
         )
     if mime_type == PDF_MIME:
-        pdf = classify_pdf(file_bytes)
+        pdf = classify_pdf(
+            file_bytes,
+            min_meaningful_chars=settings.DOCUMENT_DIGITAL_MIN_MEANINGFUL_CHARS,
+        )
         return Classification(
             route=ProcessingRoute(pdf.route),
             details=pdf.details(),

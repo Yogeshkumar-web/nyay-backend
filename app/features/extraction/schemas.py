@@ -13,16 +13,6 @@ from app.features.extraction.models import ExtractionStatus, ReviewStatus
 
 
 # ─────────────────────────────
-# Helpers
-# ─────────────────────────────
-def _strip(v: Optional[str]) -> Optional[str]:
-    if isinstance(v, str):
-        v = v.strip()
-        return v if v else None
-    return v
-
-
-# ─────────────────────────────
 # Extraction Result
 # ─────────────────────────────
 class ExtractionResultResponse(BaseModel):
@@ -72,50 +62,3 @@ class ReviewExtractionRequest(BaseModel):
                 raise ValueError("Invalid field key")
 
         return v
-
-
-# ─────────────────────────────
-# Typed Version
-# ─────────────────────────────
-class TypedVersionResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    document_id: uuid.UUID
-
-    typed_content: str
-    agent_notes: Optional[str] = None
-
-    status: ReviewStatus
-
-    reviewed_by: Optional[uuid.UUID]
-    reviewed_at: Optional[datetime]
-
-    created_at: datetime
-    updated_at: datetime
-
-
-class ReviewTypedVersionRequest(BaseModel):
-    typed_content: str = Field(..., min_length=1, max_length=20000)
-
-    status: ReviewStatus
-
-    @field_validator("typed_content", mode="before")
-    @classmethod
-    def normalize_content(cls, v):
-        return _strip(v)
-
-
-class SaveTypedVersionRequest(BaseModel):
-    """
-    Used for text auto-save and manual save.
-    Status is always set to 'edited' automatically — caller does not choose it.
-    No max_length: legal documents (FIR, chargesheet, affidavit) can be very long.
-    """
-
-    typed_content: str = Field(..., min_length=1)
-
-    @field_validator("typed_content", mode="before")
-    @classmethod
-    def normalize_content(cls, v):
-        return _strip(v)

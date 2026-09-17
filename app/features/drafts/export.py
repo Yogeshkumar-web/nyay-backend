@@ -187,6 +187,7 @@ def generate_reviewed_document_docx(
     title: str,
     *,
     structured_extraction: dict[str, Any] | None = None,
+    canonical_document: dict[str, Any] | None = None,
 ) -> bytes:
     """Generate a deterministic DOCX from lawyer-reviewed text and extraction hints."""
     html_body = _md_to_html(content)
@@ -212,6 +213,20 @@ def generate_reviewed_document_docx(
     para_fmt.line_spacing = Pt(23)
 
     _configure_named_styles(doc)
+
+    if canonical_document:
+        from app.features.documents.canonical_document import (
+            canonical_document_from_dict,
+        )
+
+        canonical = canonical_document_from_dict(canonical_document)
+        if canonical is not None:
+            _add_document_title(doc, canonical.title or title)
+            _add_canonical_blocks(doc, canonical.blocks)
+            buf = io.BytesIO()
+            doc.save(buf)
+            return buf.getvalue()
+
     _add_document_title(doc, title)
 
     soup = BeautifulSoup(html_body, "html.parser")
@@ -298,6 +313,63 @@ def generate_reviewed_document_docx(
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
+
+
+def _add_canonical_blocks(doc: Document, blocks: list[Any]) -> None:
+    for block in blocks:
+        if block.semantic_role == "title" and block.type in {"heading", "generic"}:
+            continue
+        if block.type in {"heading", "generic"} and block.heading:
+            paragraph = doc.add_paragraph(style="Heading 2")
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            paragraph.add_run(block.heading)
+        elif block.type in {"paragraph", "signature"} and block.text:
+            paragraph = doc.add_paragraph(style="Normal")
+            paragraph.alignment = (
+                WD_ALIGN_PARAGRAPH.RIGHT
+                if block.type == "signature"
+                else WD_ALIGN_PARAGRAPH.JUSTIFY
+            )
+            paragraph.add_run(block.text)
+        elif block.type == "key_value" and block.fields:
+            table = doc.add_table(rows=0, cols=2)
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            for field in block.fields:
+                cells = table.add_row().cells
+                cells[0].text = field.label
+                cells[1].text = field.value
+                for run in cells[0].paragraphs[0].runs:
+                    run.bold = True
+        elif block.type == "table" and (block.headers or block.rows):
+            column_count = max(
+                len(block.headers),
+                max((len(row) for row in block.rows), default=0),
+            )
+            if column_count == 0:
+                continue
+            table = doc.add_table(rows=0, cols=column_count)
+            table.style = "Table Grid"
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+            if block.headers:
+                cells = table.add_row().cells
+                for index, value in enumerate(block.headers):
+                    cells[index].text = value
+                    for run in cells[index].paragraphs[0].runs:
+                        run.bold = True
+            for row in block.rows:
+                cells = table.add_row().cells
+                for index, value in enumerate(row[:column_count]):
+                    cells[index].text = value
+        elif block.type == "list" and block.items:
+            for index, item in enumerate(block.items, start=1):
+                paragraph = doc.add_paragraph(style="Normal")
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                paragraph.paragraph_format.left_indent = Twips(720)
+                paragraph.paragraph_format.first_line_indent = Twips(-360)
+                marker = f"{index}." if block.ordered else "•"
+                paragraph.add_run(f"{marker}  {item}")
+        elif block.type == "page_break":
+            doc.add_page_break()
 
 
 def _configure_named_styles(doc: Document) -> None:

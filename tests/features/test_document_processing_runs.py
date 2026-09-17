@@ -1,10 +1,11 @@
 from types import SimpleNamespace
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import fitz
 import pytest
 
+from app.core.config import settings
 from app.features.documents.models import DocReviewStatus
 from app.features.documents.models import OcrStatus
 from app.features.documents.models import ProcessingStatus
@@ -13,12 +14,23 @@ from app.features.documents.service import DocumentService
 from app.features.documents.digital_extractor import (
     PageSplit,
     build_single_image_page,
+    classify_pdf,
+    render_pdf_pages,
     split_pdf_pages,
 )
 from app.features.documents.document_processing_service import OcrResult
 from app.features.documents.models import DocumentPageStatus
 from app.features.documents.models import ProcessingRunStatus
 from app.features.documents.page_stitching import stitch_ocr_pages
+from app.features.documents.providers.contracts import (
+    DocumentProviderError,
+    ExtractedPageText,
+    ProviderErrorCategory,
+)
+from app.features.documents.providers.sarvam import (
+    SarvamTypingAdapter,
+    _extract_typing_content,
+)
 from app.features.documents.repository import DocumentRepository
 from app.features.documents.sarvam_vision import SarvamVisionOcrProvider
 from app.features.documents.structured_extraction import (
@@ -28,27 +40,88 @@ from app.features.documents.structured_extraction import (
 
 
 def test_processing_run_status_contains_refactor_stages():
-    assert [status.value for status in ProcessingRunStatus] == [
-        "uploaded",
-        "splitting_pages",
-        "ocr_running",
+    statuses = {status.value for status in ProcessingRunStatus}
+    assert {
+        "queued",
+        "classifying_pages",
+        "extracting_pages",
+        "typing_pages",
         "stitching_pages",
-        "structured_extraction",
         "ready_for_review",
-        "reviewed",
-        "docx_ready",
+        "approved",
         "failed",
-    ]
+    } <= statuses
 
 
 def test_document_page_status_contains_split_stages():
-    assert [status.value for status in DocumentPageStatus] == [
-        "pending",
-        "split",
-        "ocr_running",
-        "ocr_completed",
+    statuses = {status.value for status in DocumentPageStatus}
+    assert {
+        "inventoried",
+        "classified",
+        "extracting",
+        "extracted",
+        "typing",
+        "typed",
+        "blank",
         "failed",
-    ]
+    } <= statuses
+
+
+def test_typing_content_reports_exhausted_token_budget_as_retryable():
+    with pytest.raises(DocumentProviderError) as captured:
+        _extract_typing_content(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": None, "reasoning_content": "hidden"},
+                    }
+                ]
+            }
+        )
+
+    assert captured.value.retryable is True
+    assert "token budget" in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_typing_invalid_response_falls_back_to_extracted_text(monkeypatch):
+    class AlwaysInvalidTypingAdapter(SarvamTypingAdapter):
+        async def _type_batch(self, pages, *, document_type_hint, idempotency_key):
+            raise DocumentProviderError(
+                "invalid JSON",
+                category=ProviderErrorCategory.invalid_response,
+                retryable=True,
+            )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(
+        "app.features.documents.providers.sarvam.asyncio.sleep", no_sleep
+    )
+    page_id = uuid.uuid4()
+    adapter = AlwaysInvalidTypingAdapter(api_key="test")
+
+    result = await adapter.type_pages(
+        [
+            ExtractedPageText(
+                page_id=page_id,
+                page_number=1,
+                text="Vision OCR text",
+                method="vision_ocr",
+                provider_key="test_vision",
+            )
+        ],
+        document_type_hint="fir",
+        idempotency_key="test",
+    )
+
+    assert len(result) == 1
+    assert result[0].page_id == page_id
+    assert result[0].typed_markdown == "Vision OCR text"
+    assert result[0].provider_key == "extraction_fallback"
+    assert "review" in result[0].warnings[0].lower()
 
 
 def test_split_pdf_pages_returns_single_page_artifacts_in_order():
@@ -67,6 +140,35 @@ def test_split_pdf_pages_returns_single_page_artifacts_in_order():
     assert all(page.mime_type == "image/png" for page in pages)
     assert all(page.content.startswith(b"\x89PNG\r\n\x1a\n") for page in pages)
     assert all(len(page.checksum) == 64 for page in pages)
+
+
+def test_render_pdf_pages_respects_empty_page_selection():
+    pdf = fitz.open()
+    try:
+        pdf.new_page()
+        pdf.new_page()
+        pdf_bytes = pdf.tobytes()
+    finally:
+        pdf.close()
+
+    assert render_pdf_pages(pdf_bytes, ()) == []
+
+
+def test_classify_pdf_identifies_blank_pages_without_provider_work():
+    pdf = fitz.open()
+    try:
+        pdf.new_page()
+        text_page = pdf.new_page()
+        text_page.insert_text((72, 72), "Searchable legal document text " * 4)
+        pdf_bytes = pdf.tobytes()
+    finally:
+        pdf.close()
+
+    classification = classify_pdf(pdf_bytes)
+
+    assert classification.blank_pages == (1,)
+    assert classification.digital_pages == (2,)
+    assert classification.scanned_pages == ()
 
 
 def test_build_single_image_page_preserves_original_image_bytes():
@@ -375,7 +477,8 @@ async def test_stale_processing_marks_document_and_job_failed(monkeypatch):
         processing_status=ProcessingStatus.processing,
         processing_job_id=str(uuid.uuid4()),
         ocr_job_id=None,
-        updated_at=datetime.utcnow() - timedelta(seconds=180),
+        updated_at=datetime.now(UTC).replace(tzinfo=None)
+        - timedelta(seconds=settings.DOCUMENT_PROCESSING_STALE_AFTER_SECONDS + 60),
     )
     service = DocumentService(_FakeDb())  # type: ignore[arg-type]
     service.repo = _FakeStaleRepo()  # type: ignore[assignment]
@@ -428,6 +531,8 @@ async def test_update_processing_run_marks_terminal_timestamp():
     assert run.metadata_ == {"processing_route": "scanned_ocr"}
     assert run.completed_at is not None
     assert run.updated_at is not None
+    assert run.completed_at.tzinfo is None
+    assert run.updated_at.tzinfo is None
 
 
 @pytest.mark.asyncio
@@ -446,6 +551,8 @@ async def test_update_processing_run_keeps_non_terminal_open():
 
     assert run.status == ProcessingRunStatus.ocr_running
     assert run.completed_at is None
+    assert run.updated_at is not None
+    assert run.updated_at.tzinfo is None
 
 
 class _FakeSession:

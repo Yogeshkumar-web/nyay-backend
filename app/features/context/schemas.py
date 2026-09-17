@@ -2,20 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional, Dict
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    computed_field,
-    field_validator,
-)
-
-
-# ─────────────────────────────
-# Helpers
-# ─────────────────────────────
-def _dedupe_list(values: list[uuid.UUID]) -> list[uuid.UUID]:
-    return list(dict.fromkeys(values))
+from pydantic import BaseModel, ConfigDict, computed_field
 
 
 # ─────────────────────────────
@@ -41,27 +28,6 @@ class CaseContextResponse(BaseModel):
 
     version: int
     last_updated_at: datetime
-
-
-# ─────────────────────────────
-# Push Request
-# ─────────────────────────────
-class PushToContextRequest(BaseModel):
-    document_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=20)
-
-    @field_validator("document_ids")
-    @classmethod
-    def validate_ids(cls, v: list[uuid.UUID]):
-        if not v:
-            raise ValueError("document_ids cannot be empty")
-
-        # dedupe
-        v = _dedupe_list(v)
-
-        if len(v) > 20:
-            raise ValueError("Too many documents")
-
-        return v
 
 
 # ─────────────────────────────

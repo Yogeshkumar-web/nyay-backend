@@ -1,7 +1,6 @@
 import uuid
 import re
-import html
-import json
+import hashlib
 from datetime import datetime, timedelta, timezone
 import logging
 
@@ -11,22 +10,37 @@ from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import ForbiddenError, NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.features.cases.repository import CaseRepository
 from app.features.documents.models import (
     Document,
+    DocumentType,
+    DocumentPageStatus,
+    DocReviewStatus,
     OcrStatus,
     ProcessingRunStatus,
     ProcessingStatus,
+    TypedRevisionStatus,
     UploadStatus,
+)
+from app.features.documents.canonical_document import (
+    CANONICAL_SCHEMA_VERSION,
+    build_canonical_document,
 )
 from app.features.documents.repository import DocumentRepository
 from app.features.documents.schemas import (
     ConfirmUploadRequest,
+    ConfirmUploadResponse,
     DocumentResponse,
+    DocumentPageProgressResponse,
+    ProcessingProgressResponse,
+    ProcessingRunResponse,
     PresignUploadRequest,
     PresignUploadResponse,
     SaveReviewRequest,
+    SaveTypedRevisionRequest,
+    TypedRevisionResponse,
+    ApproveTypedRevisionResponse,
     UpdateDocumentRequest,
     ViewUrlResponse,
 )
@@ -46,22 +60,8 @@ ALLOWED_MIME_TYPES = {
 }
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-OCR_STALE_AFTER_SECONDS = 120
-MAX_CONTEXT_TOKENS = 80_000
-
-
-def _has_meaningful_content(content: str | None) -> bool:
-    if not content:
-        return False
-    text = re.sub(r"<[^>]+>", " ", content)
-    text = html.unescape(text).replace("\xa0", " ")
-    return bool(text.strip())
-
-
-def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4) if text else 0
-
-
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 def _format_validation_error(exc: ValidationError) -> str:
     message = exc.message
     details = exc.details or {}
@@ -123,7 +123,7 @@ class DocumentService:
             return
 
         doc.upload_status = UploadStatus.failed
-        doc.updated_at = datetime.utcnow()
+        doc.updated_at = _utcnow()
         await self.db.flush()
         raise ValidationError(
             "Document file is missing from storage. Re-upload the document."
@@ -144,7 +144,7 @@ class DocumentService:
 
         logger.info("Self-healing upload_status for document %s from R2", doc.id)
         doc.upload_status = UploadStatus.uploaded
-        doc.updated_at = datetime.utcnow()
+        doc.updated_at = _utcnow()
         await self.db.flush()
         return doc
 
@@ -158,7 +158,9 @@ class DocumentService:
         if updated_at.tzinfo is not None:
             updated_at = updated_at.replace(tzinfo=None)
 
-        if datetime.utcnow() - updated_at < timedelta(seconds=OCR_STALE_AFTER_SECONDS):
+        if _utcnow() - updated_at < timedelta(
+            seconds=settings.DOCUMENT_PROCESSING_STALE_AFTER_SECONDS
+        ):
             return False
 
         logger.warning("Marking stale OCR job as failed for document %s", doc.id)
@@ -239,7 +241,7 @@ class DocumentService:
         document_id: uuid.UUID,
         data: ConfirmUploadRequest,
         current_user: User,
-    ) -> DocumentResponse:
+    ) -> ConfirmUploadResponse:
         doc = await self.repo.get_by_id(document_id)
         if not doc:
             raise NotFoundError("Document not found")
@@ -250,7 +252,22 @@ class DocumentService:
         doc = await self.repo.confirm_upload(doc, data.is_scanned)
         await self.db.commit()
 
-        response = DocumentResponse.model_validate(doc)
+        active_run = (
+            await self.repo.get_processing_run(doc.active_processing_run_id)
+            if doc.active_processing_run_id
+            else None
+        )
+        if active_run is None or active_run.status == ProcessingRunStatus.failed:
+            queued = await self._queue_processing(
+                doc,
+                started_by=current_user.id,
+                force=False,
+            )
+            active_run = await self.repo.get_processing_run(
+                uuid.UUID(queued["processing_run_id"])
+            )
+        if active_run is None:
+            raise ValidationError("Document processing could not be queued.")
 
         # ─────────────────────────────
         # Create notification
@@ -274,7 +291,10 @@ class DocumentService:
                 "Failed to create upload notification for document %s", doc.id
             )
 
-        return response
+        return ConfirmUploadResponse(
+            document=DocumentResponse.model_validate(doc),
+            processing_run=ProcessingRunResponse.model_validate(active_run),
+        )
 
     # ── Run OCR ───────────────────────────────────────────────────────────────
 
@@ -289,7 +309,12 @@ class DocumentService:
 
         await self._require_case_edit(doc.case_id, current_user)
 
-        return await self._queue_processing(doc, started_by=current_user.id, force=True)
+        return await self._queue_processing(
+            doc,
+            started_by=current_user.id,
+            force=True,
+            trigger="full_reprocess",
+        )
 
     async def _queue_processing(
         self,
@@ -297,12 +322,16 @@ class DocumentService:
         *,
         started_by: uuid.UUID,
         force: bool = False,
+        trigger: str | None = None,
     ) -> dict:
         from app.workers.document_processing_tasks import process_document
         from app.workers.job_store import JobStatus, set_job_status
 
         doc = await self._ensure_upload_confirmed_from_storage(doc)
-        if doc.processing_status == ProcessingStatus.processing:
+        if doc.processing_status in {
+            ProcessingStatus.queued,
+            ProcessingStatus.processing,
+        }:
             return {"job_id": doc.processing_job_id, "already_running": True}
 
         job_id = str(uuid.uuid4())
@@ -312,8 +341,11 @@ class DocumentService:
             doc,
             job_id=job_id,
             started_by=started_by,
-            status=ProcessingRunStatus.ocr_running,
-            metadata={"pipeline": "manual_document_processing_v1"},
+            status=ProcessingRunStatus.queued,
+            metadata={
+                "pipeline": "document_pipeline_v2",
+                "trigger": trigger or ("manual" if force else "upload_confirmation"),
+            },
         )
         await self.db.commit()
 
@@ -461,93 +493,276 @@ class DocumentService:
         await self.db.commit()
         return DocumentResponse.model_validate(doc)
 
-    # ── Push to context ────────────────────────────────────────────────────────
-
-    async def push_to_context(
+    async def get_processing_progress(
         self,
         document_id: uuid.UUID,
         current_user: User,
-    ) -> dict:
-        from app.features.context.repository import ContextRepository
-
+        run_id: uuid.UUID | None = None,
+    ) -> ProcessingProgressResponse:
         doc = await self.repo.get_by_id(document_id)
-        if not doc:
+        if doc is None:
             raise NotFoundError("Document not found")
-
-        await self._require_case_edit(doc.case_id, current_user)
-
-        content_to_push = doc.reviewed_content or doc.source_text or doc.ocr_raw_text
-        if not _has_meaningful_content(content_to_push):
-            if doc.ocr_status == OcrStatus.processing:
-                raise ValidationError(
-                    "OCR is still running. Wait for it to finish first."
-                )
-            if doc.ocr_status == OcrStatus.failed:
-                detail = f": {doc.ocr_error}" if doc.ocr_error else ""
-                raise ValidationError(
-                    f"OCR failed{detail}. Retry OCR or save text manually."
-                )
-            if doc.ocr_status == OcrStatus.not_required:
-                raise ValidationError(
-                    "Save reviewed text before pushing this typed document."
-                )
-            raise ValidationError(
-                "No content to push. Complete OCR or save reviewed text first."
-            )
-            raise ValidationError("No content to push — OCR must complete first")
-
-        context_repo = ContextRepository(self.db)
-        existing = await context_repo.get_context(doc.case_id)
-        context_json = dict(existing.context_json or {}) if existing else {}
-        pushed_documents = dict(existing.pushed_documents or {}) if existing else {}
-
-        existing_docs = context_json.get("documents", [])
-        if not isinstance(existing_docs, list):
-            existing_docs = []
-        doc_id_str = str(doc.id)
-
-        existing_docs = [
-            d
-            for d in existing_docs
-            if isinstance(d, dict) and d.get("document_id") != doc_id_str
+        await self._require_case_access(doc.case_id, current_user)
+        selected_run_id = run_id or doc.active_processing_run_id
+        if selected_run_id is None:
+            raise NotFoundError("Document processing run not found")
+        run = await self.repo.get_processing_run(selected_run_id)
+        if run is None or run.document_id != doc.id:
+            raise NotFoundError("Document processing run not found")
+        pages = await self.repo.list_pages_for_run(run.id)
+        payload = ProcessingProgressResponse.model_validate(run)
+        payload.pages = [
+            DocumentPageProgressResponse.model_validate(page) for page in pages
         ]
+        return payload
 
-        existing_docs.append(
-            {
-                "document_id": doc_id_str,
-                "document_type": doc.document_type.value,
-                "filename": doc.display_name or doc.original_filename,
-                "content": content_to_push,
-            }
+    async def retry_page(
+        self,
+        document_id: uuid.UUID,
+        page_number: int,
+        current_user: User,
+    ) -> dict:
+        doc = await self.repo.get_by_id(document_id)
+        if doc is None:
+            raise NotFoundError("Document not found")
+        await self._require_case_edit(doc.case_id, current_user)
+        if doc.active_processing_run_id is None:
+            raise NotFoundError("Document processing run not found")
+        page = await self.repo.get_run_page_for_update(
+            doc.active_processing_run_id,
+            page_number,
         )
+        if page is None:
+            raise NotFoundError("Document page not found")
+        if page.status != DocumentPageStatus.failed:
+            raise ValidationError("Only a failed page can be retried.")
+        from app.workers.document_processing_tasks import retry_document_page
+        from app.workers.job_store import JobStatus, set_job_status
 
-        context_json["documents"] = existing_docs
-        pushed_documents[doc_id_str] = {
-            "document_type": doc.document_type.value,
-            "filename": doc.display_name or doc.original_filename,
-            "added_at": datetime.utcnow().isoformat(),
-            "source": "document_review",
-            "content_chars": len(content_to_push),
-        }
-
-        token_estimate = _estimate_tokens(json.dumps(context_json, ensure_ascii=False))
-        if token_estimate > MAX_CONTEXT_TOKENS:
-            raise ValidationError("Context too large, trim required")
-
-        await context_repo.upsert_context(
-            case_id=doc.case_id,
-            context_json=context_json,
-            pushed_documents=pushed_documents,
-            token_estimate=token_estimate,
+        job_id = str(uuid.uuid4())
+        retry_stage = (
+            ProcessingRunStatus.typing_pages
+            if page.extracted_text is not None
+            else ProcessingRunStatus.extracting_pages
         )
-
-        await self.repo.mark_pushed(doc)
+        page.status = (
+            DocumentPageStatus.typing
+            if page.extracted_text is not None
+            else DocumentPageStatus.extracting
+        )
+        page.error = None
+        page.attempt_count += 1
+        run = await self.repo.get_processing_run(doc.active_processing_run_id)
+        if run is None:
+            raise NotFoundError("Document processing run not found")
+        await self.repo.update_processing_run(run, status=retry_stage, error=None)
+        doc.processing_status = ProcessingStatus.processing
+        doc.processing_error = None
         await self.db.commit()
-
+        try:
+            await set_job_status(
+                job_id,
+                JobStatus.pending,
+                result={
+                    "document_id": str(doc.id),
+                    "processing_run_id": str(run.id),
+                    "page_number": page_number,
+                },
+            )
+            retry_document_page.apply_async(
+                args=[str(doc.id), str(run.id), page_number],
+                task_id=job_id,
+            )
+        except Exception as exc:
+            page.status = DocumentPageStatus.failed
+            page.error = "Document page retry could not be queued."
+            await self.repo.update_processing_run(
+                run,
+                status=ProcessingRunStatus.failed,
+                error=page.error,
+            )
+            doc.processing_status = ProcessingStatus.failed
+            doc.processing_error = page.error
+            await self.db.commit()
+            raise ValidationError(page.error) from exc
         return {
-            "case_id": str(doc.case_id),
-            "document_id": str(doc.id),
+            "job_id": job_id,
+            "processing_run_id": str(run.id),
+            "page_number": page_number,
         }
+
+    async def get_typed_revision(
+        self,
+        document_id: uuid.UUID,
+        current_user: User,
+    ) -> TypedRevisionResponse:
+        doc = await self.repo.get_by_id(document_id)
+        if doc is None:
+            raise NotFoundError("Document not found")
+        await self._require_case_access(doc.case_id, current_user)
+        revision = await self.repo.get_latest_typed_revision(document_id)
+        if revision is None:
+            raise NotFoundError("Typed version not found")
+        await self.ensure_canonical_structure(doc, revision)
+        await self.db.commit()
+        return TypedRevisionResponse.model_validate(revision)
+
+    async def ensure_canonical_structure(self, doc: Document, revision):
+        if (
+            revision.canonical_structure
+            and revision.canonical_schema_version >= CANONICAL_SCHEMA_VERSION
+            and revision.canonical_structure.get("source_markdown_hash")
+            == hashlib.sha256(revision.content_markdown.encode("utf-8")).hexdigest()
+        ):
+            return revision
+        canonical = build_canonical_document(
+            revision.content_markdown,
+            document_type=doc.document_type.value,
+            page_evidence=(doc.source_artifact or {}).get("page_evidence"),
+        )
+        revision.canonical_structure = canonical.model_dump(mode="json")
+        revision.canonical_schema_version = canonical.schema_version
+        if doc.document_type == DocumentType.other and canonical.document_type == "fir":
+            doc.document_type = DocumentType.fir
+        await self.db.flush()
+        return revision
+
+    async def save_typed_revision(
+        self,
+        document_id: uuid.UUID,
+        data: SaveTypedRevisionRequest,
+        current_user: User,
+    ) -> TypedRevisionResponse:
+        doc = await self.repo.get_by_id(document_id)
+        if doc is None:
+            raise NotFoundError("Document not found")
+        await self._require_case_edit(doc.case_id, current_user)
+        revision = await self.repo.get_typed_revision(data.revision_id)
+        if revision is None or revision.document_id != doc.id:
+            raise NotFoundError("Typed version not found")
+        if revision.lock_version != data.lock_version:
+            latest = await self.repo.get_latest_typed_revision(doc.id)
+            raise ConflictError(
+                "This document was changed in another session.",
+                details={
+                    "latest_revision_id": str(latest.id) if latest else None,
+                    "latest_lock_version": latest.lock_version if latest else None,
+                },
+            )
+        content = data.content_markdown.strip()
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        canonical = build_canonical_document(
+            content,
+            document_type=doc.document_type.value,
+            page_evidence=(doc.source_artifact or {}).get("page_evidence"),
+        )
+        if revision.status == TypedRevisionStatus.approved:
+            revision = await self.repo.create_typed_revision(
+                doc,
+                content_markdown=content,
+                content_hash=content_hash,
+                canonical_structure=canonical.model_dump(mode="json"),
+                canonical_schema_version=canonical.schema_version,
+                created_by=current_user.id,
+                processing_run_id=revision.processing_run_id,
+                parent_revision_id=revision.id,
+            )
+        else:
+            revision = await self.repo.update_typed_draft(
+                revision,
+                content_markdown=content,
+                content_hash=content_hash,
+                canonical_structure=canonical.model_dump(mode="json"),
+                canonical_schema_version=canonical.schema_version,
+            )
+            doc.latest_typed_revision_id = revision.id
+            doc.review_status = DocReviewStatus.review_required
+            doc.processing_status = ProcessingStatus.ready_for_review
+            doc.reviewed_content = content
+
+        from app.features.extraction.repository import ExtractionRepository
+        from app.features.extraction.models import ReviewStatus
+
+        legacy = await ExtractionRepository(self.db).create_or_update_typed_version(
+            document_id=doc.id,
+            typed_content=content,
+            agent_notes="canonical_revision_v2",
+        )
+        legacy.status = ReviewStatus.edited
+        legacy.reviewed_by = current_user.id
+        await self.db.commit()
+        return TypedRevisionResponse.model_validate(revision)
+
+    async def approve_typed_revision(
+        self,
+        document_id: uuid.UUID,
+        current_user: User,
+    ) -> ApproveTypedRevisionResponse:
+        doc = await self.repo.get_by_id(document_id)
+        if doc is None:
+            raise NotFoundError("Document not found")
+        await self._require_case_edit(doc.case_id, current_user)
+        revision = await self.repo.get_latest_typed_revision(document_id)
+        if revision is None or not revision.content_markdown.strip():
+            raise ValidationError("Save typed document content before approval.")
+        await self.ensure_canonical_structure(doc, revision)
+        if revision.status == TypedRevisionStatus.approved:
+            event = await self.repo.get_approval_event(doc.id)
+            if event is None:
+                raise ValidationError("Document approval event is missing.")
+            return ApproveTypedRevisionResponse(
+                revision=TypedRevisionResponse.model_validate(revision),
+                event_id=event.id,
+            )
+        if doc.active_processing_run_id:
+            pages = await self.repo.list_pages_for_run(doc.active_processing_run_id)
+            failed = [page.page_number for page in pages if page.status == DocumentPageStatus.failed]
+            if failed:
+                raise ValidationError(
+                    "Failed pages must be retried before approval.",
+                    details={"failed_pages": failed},
+                )
+        now = datetime.now(timezone.utc)
+        event_payload = {
+            "event_type": "document.typed_version.approved",
+            "document_id": str(doc.id),
+            "case_id": str(doc.case_id),
+            "approved_revision_id": str(revision.id),
+            "processing_run_id": str(revision.processing_run_id) if revision.processing_run_id else None,
+            "content_hash": revision.content_hash,
+            "canonical_schema_version": revision.canonical_schema_version,
+            "unresolved_block_count": revision.canonical_structure.get(
+                "unresolved_block_count", 0
+            ),
+            "approved_by": str(current_user.id),
+            "approved_at": now.isoformat(),
+        }
+        event = await self.repo.approve_typed_revision(
+            doc,
+            revision,
+            approved_by=current_user.id,
+            event_payload=event_payload,
+        )
+        if doc.active_processing_run_id:
+            run = await self.repo.get_processing_run(doc.active_processing_run_id)
+            if run:
+                await self.repo.update_processing_run(
+                    run,
+                    status=ProcessingRunStatus.approved,
+                )
+        from app.features.extraction.repository import ExtractionRepository
+        from app.features.extraction.models import ReviewStatus
+
+        legacy = await ExtractionRepository(self.db).get_typed_version(doc.id)
+        if legacy:
+            legacy.status = ReviewStatus.accepted
+            legacy.reviewed_by = current_user.id
+            legacy.reviewed_at = _utcnow()
+        await self.db.commit()
+        return ApproveTypedRevisionResponse(
+            revision=TypedRevisionResponse.model_validate(revision),
+            event_id=event.id,
+        )
 
     # ── Document Readiness ─────────────────────────────────────────────────────
 
@@ -586,21 +801,12 @@ class DocumentService:
                 missing.append("ocr")
                 pending_ocr += 1
 
-            # Step 2: Usable document content exists. TypedVersion is kept only
-            # as a reviewed editor artifact; generated typing is removed.
-            typed_ok = bool(
-                (doc.reviewed_content and doc.reviewed_content.strip())
-                or (doc.source_text and doc.source_text.strip())
-            )
+            # Step 2: only an explicitly approved canonical revision is ready
+            # for downstream Case KB and drafting workflows.
+            typed_ok = doc.approved_typed_revision_id is not None
             if ocr_ok and not typed_ok:
-                tv = await ext_repo.get_typed_version(doc.id)
-                typed_ok = tv is not None and tv.status in (
-                    ReviewStatus.edited,
-                    ReviewStatus.accepted,
-                )
-                if not typed_ok:
-                    missing.append("typed_content")
-                    pending_typed += 1
+                missing.append("typed_approval")
+                pending_typed += 1
 
             # Step 3: Extraction reviewed (optional — only required if extraction ran)
             ex_ok = True

@@ -10,6 +10,8 @@ from app.features.documents.digital_extractor import (
     DocumentInputError,
     build_pdf_chunks,
     extract_docx,
+    embedded_text_quality,
+    is_embedded_text_usable,
     validate_file_signature,
 )
 from app.features.documents.document_classifier import classify_document
@@ -25,7 +27,9 @@ def _pdf_bytes(*page_texts: str) -> bytes:
     try:
         for text in page_texts:
             page = pdf.new_page()
-            if text:
+            if text == "[[SCANNED_PAGE]]":
+                page.draw_rect(fitz.Rect(72, 72, 320, 520), color=(0, 0, 0))
+            elif text:
                 page.insert_text((72, 72), text)
         return pdf.tobytes()
     finally:
@@ -51,10 +55,31 @@ def test_classifies_digital_pdf() -> None:
     assert result.pdf is not None
     assert result.pdf.digital_pages == (1,)
     assert result.pdf.scanned_pages == ()
+    assert result.pdf.low_quality_pages == ()
+
+
+def test_rejects_mojibake_embedded_text_as_digital_quality() -> None:
+    corrupted = (
+        "P.S. (थाना): ठȡ\u0080Ǖ\u009aɮ\u009dȡ\u009aȡ "
+        "FIR Ĥ.सǗ.ǐ\u009a. सं. 0059 "
+        "भȡ\u009aतȢ\u0099 Û\u0099ȡ\u0099  ंǑ¡तȡ"
+    )
+
+    quality = embedded_text_quality(corrupted)
+
+    assert quality["control_chars"] >= 2
+    assert quality["usable"] is False
+    assert is_embedded_text_usable(corrupted) is False
+    assert is_embedded_text_usable(
+        "प्रथम सूचना रिपोर्ट थाना ठाकुरद्वारा FIR No. 0059"
+    ) is True
 
 
 def test_classifies_hybrid_pdf_page_by_page() -> None:
-    result = classify_document(_pdf_bytes("A" * 80, ""), PDF_MIME)
+    result = classify_document(
+        _pdf_bytes("A" * 80, "[[SCANNED_PAGE]]"),
+        PDF_MIME,
+    )
 
     assert result.route == ProcessingRoute.hybrid_extract
     assert result.pdf is not None
@@ -145,7 +170,7 @@ async def test_hybrid_processing_only_sends_scanned_pages_to_ocr() -> None:
     service = _FakeOcrService()
 
     result = await process_document_bytes(
-        _pdf_bytes("A" * 80, "", "B" * 80),
+        _pdf_bytes("A" * 80, "[[SCANNED_PAGE]]", "B" * 80),
         PDF_MIME,
         ocr_service=service,
     )

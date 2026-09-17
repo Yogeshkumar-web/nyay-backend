@@ -4,6 +4,7 @@ import io
 import hashlib
 import re
 import zipfile
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -33,7 +34,10 @@ class PdfClassification:
     page_count: int
     digital_pages: tuple[int, ...]
     scanned_pages: tuple[int, ...]
+    blank_pages: tuple[int, ...]
+    low_quality_pages: tuple[int, ...]
     page_text: dict[int, str]
+    min_meaningful_chars: int = MIN_DIGITAL_PAGE_CHARS
 
     def details(self) -> dict[str, Any]:
         return {
@@ -41,7 +45,9 @@ class PdfClassification:
             "page_count": self.page_count,
             "digital_pages": list(self.digital_pages),
             "scanned_pages": list(self.scanned_pages),
-            "min_digital_page_chars": MIN_DIGITAL_PAGE_CHARS,
+            "blank_pages": list(self.blank_pages),
+            "low_quality_pages": list(self.low_quality_pages),
+            "min_digital_page_chars": self.min_meaningful_chars,
         }
 
 
@@ -87,7 +93,11 @@ def validate_file_signature(file_bytes: bytes, mime_type: str) -> None:
         )
 
 
-def classify_pdf(file_bytes: bytes) -> PdfClassification:
+def classify_pdf(
+    file_bytes: bytes,
+    *,
+    min_meaningful_chars: int = MIN_DIGITAL_PAGE_CHARS,
+) -> PdfClassification:
     try:
         pdf = fitz.open(stream=file_bytes, filetype="pdf")
     except Exception as exc:
@@ -102,12 +112,21 @@ def classify_pdf(file_bytes: bytes) -> PdfClassification:
         page_text: dict[int, str] = {}
         digital_pages: list[int] = []
         scanned_pages: list[int] = []
+        blank_pages: list[int] = []
+        low_quality_pages: list[int] = []
         for index, page in enumerate(pdf):
             page_number = index + 1
             text = _normalize_text(page.get_text("text"))
             page_text[page_number] = text
-            if len(_meaningful_chars(text)) >= MIN_DIGITAL_PAGE_CHARS:
+            meaningful_count = len(_meaningful_chars(text))
+            has_visual_content = bool(page.get_images(full=True) or page.get_drawings())
+            if meaningful_count >= min_meaningful_chars and is_embedded_text_usable(text):
                 digital_pages.append(page_number)
+            elif meaningful_count >= min_meaningful_chars:
+                scanned_pages.append(page_number)
+                low_quality_pages.append(page_number)
+            elif meaningful_count == 0 and not has_visual_content:
+                blank_pages.append(page_number)
             else:
                 scanned_pages.append(page_number)
     finally:
@@ -123,7 +142,10 @@ def classify_pdf(file_bytes: bytes) -> PdfClassification:
         page_count=len(page_text),
         digital_pages=tuple(digital_pages),
         scanned_pages=tuple(scanned_pages),
+        blank_pages=tuple(blank_pages),
+        low_quality_pages=tuple(low_quality_pages),
         page_text=page_text,
+        min_meaningful_chars=min_meaningful_chars,
     )
 
 
@@ -205,6 +227,13 @@ def build_pdf_chunks(
 
 
 def split_pdf_pages(file_bytes: bytes) -> list[PageSplit]:
+    return render_pdf_pages(file_bytes)
+
+
+def render_pdf_pages(
+    file_bytes: bytes,
+    page_numbers: tuple[int, ...] | None = None,
+) -> list[PageSplit]:
     try:
         source = fitz.open(stream=file_bytes, filetype="pdf")
     except Exception as exc:
@@ -216,8 +245,17 @@ def split_pdf_pages(file_bytes: bytes) -> list[PageSplit]:
             raise DocumentInputError("Password-protected PDFs are not supported.")
         if source.page_count == 0:
             raise DocumentInputError("PDF has no pages.")
+        selected = (
+            set(range(1, source.page_count + 1))
+            if page_numbers is None
+            else set(page_numbers)
+        )
+        if any(number < 1 or number > source.page_count for number in selected):
+            raise DocumentInputError("Requested PDF page is out of range.")
         for index in range(source.page_count):
             page_number = index + 1
+            if page_number not in selected:
+                continue
             page = source.load_page(index)
             matrix = fitz.Matrix(2, 2)
             pixmap = page.get_pixmap(matrix=matrix, alpha=False)
@@ -303,3 +341,43 @@ def _normalize_text(text: str) -> str:
 
 def _meaningful_chars(text: str) -> str:
     return re.sub(r"\W+", "", text, flags=re.UNICODE)
+
+
+def embedded_text_quality(text: str) -> dict[str, float | int | bool]:
+    visible = [character for character in text if not character.isspace()]
+    if not visible:
+        return {
+            "usable": False,
+            "visible_chars": 0,
+            "control_chars": 0,
+            "replacement_chars": 0,
+            "suspicious_latin_chars": 0,
+            "corruption_ratio": 1.0,
+        }
+    control_count = sum(
+        unicodedata.category(character) == "Cc" for character in visible
+    )
+    replacement_count = sum(character == "\ufffd" for character in visible)
+    suspicious_latin_count = sum(
+        0x0100 <= ord(character) <= 0x024F for character in visible
+    )
+    definite_corruption = control_count + replacement_count
+    corruption_ratio = definite_corruption / len(visible)
+    suspicious_latin_ratio = suspicious_latin_count / len(visible)
+    usable = not (
+        definite_corruption >= 2
+        or corruption_ratio >= 0.005
+        or suspicious_latin_ratio >= 0.12
+    )
+    return {
+        "usable": usable,
+        "visible_chars": len(visible),
+        "control_chars": control_count,
+        "replacement_chars": replacement_count,
+        "suspicious_latin_chars": suspicious_latin_count,
+        "corruption_ratio": round(corruption_ratio, 4),
+    }
+
+
+def is_embedded_text_usable(text: str) -> bool:
+    return bool(embedded_text_quality(text)["usable"])

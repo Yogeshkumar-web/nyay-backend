@@ -5,16 +5,11 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.dependencies import CurrentUser, DB
-from app.core.exceptions import ValidationError
-from app.features.context.schemas import PushToContextRequest
 from app.features.context.service import ContextService
 
 router = APIRouter(tags=["Context"])
 
 logger = logging.getLogger(__name__)
-
-MAX_PUSH_DOCS = 20  # prevent abuse
-
 
 # ─────────────────────────────
 # Get Context
@@ -34,49 +29,6 @@ async def get_context(case_id: uuid.UUID, current_user: CurrentUser, db: DB):
         "success": True,
         "data": {
             "context": context.model_dump(),
-            "version": context.version,
-        },
-    }
-
-
-# ─────────────────────────────
-# Push to Context
-# ─────────────────────────────
-@router.post("/cases/{case_id}/context/push", summary="Push extractions to context")
-async def push_to_context(
-    case_id: uuid.UUID,
-    body: PushToContextRequest,
-    current_user: CurrentUser,
-    db: DB,
-):
-    if not body.document_ids:
-        raise ValidationError("document_ids cannot be empty")
-
-    if len(body.document_ids) > MAX_PUSH_DOCS:
-        raise ValidationError("Too many documents in one request")
-
-    service = ContextService(db)
-
-    context, summary = await service.push_to_context(
-        case_id,
-        body.document_ids,
-        current_user,
-    )
-
-    logger.info(
-        "context_push",
-        extra={
-            "user_id": str(current_user.id),
-            "case_id": str(case_id),
-            "doc_count": len(body.document_ids),
-        },
-    )
-
-    return {
-        "success": True,
-        "data": {
-            "context": context.model_dump(),
-            "summary": summary.model_dump(),
             "version": context.version,
         },
     }

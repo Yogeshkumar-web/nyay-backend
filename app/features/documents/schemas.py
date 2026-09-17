@@ -9,6 +9,11 @@ from app.features.documents.models import (
     OcrStatus,
     ProcessingRoute,
     ProcessingStatus,
+    ProcessingRunStatus,
+    DocumentPageClassification,
+    DocumentPageStatus,
+    DocumentExtractionMethod,
+    TypedRevisionStatus,
     UploadStatus,
 )
 
@@ -34,6 +39,12 @@ class UpdateDocumentRequest(BaseModel):
 
 class SaveReviewRequest(BaseModel):
     content: str = Field(..., min_length=1)
+
+
+class SaveTypedRevisionRequest(BaseModel):
+    revision_id: uuid.UUID
+    lock_version: int = Field(..., ge=1)
+    content_markdown: str = Field(..., min_length=1)
 
 
 # ── Responses ─────────────────────────────────────────────────────────────────
@@ -74,6 +85,9 @@ class DocumentResponse(BaseModel):
     classification_details: Optional[dict] = None
     reviewed_content: Optional[str] = None
     review_status: DocReviewStatus = DocReviewStatus.pending
+    active_processing_run_id: Optional[uuid.UUID] = None
+    latest_typed_revision_id: Optional[uuid.UUID] = None
+    approved_typed_revision_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
 
@@ -88,3 +102,66 @@ class PresignUploadResponse(BaseModel):
 class ViewUrlResponse(BaseModel):
     url: str
     expires_at: datetime
+
+
+class TypedRevisionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    processing_run_id: Optional[uuid.UUID] = None
+    parent_revision_id: Optional[uuid.UUID] = None
+    revision_number: int
+    lock_version: int
+    content_markdown: str
+    content_hash: str
+    canonical_structure: dict = Field(default_factory=dict)
+    canonical_schema_version: int = 1
+    status: TypedRevisionStatus
+    created_by: uuid.UUID
+    approved_by: Optional[uuid.UUID] = None
+    approved_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentPageProgressResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    page_number: int
+    status: DocumentPageStatus
+    classification: Optional[DocumentPageClassification] = None
+    extraction_method: Optional[DocumentExtractionMethod] = None
+    warnings: list = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class ProcessingRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    job_id: str
+    status: ProcessingRunStatus
+    error: Optional[str] = None
+    total_pages: int = 0
+    completed_pages: int = 0
+    failed_pages: int = 0
+    vision_provider_key: Optional[str] = None
+    typing_provider_key: Optional[str] = None
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class ProcessingProgressResponse(ProcessingRunResponse):
+    pages: list[DocumentPageProgressResponse] = Field(default_factory=list)
+
+
+class ConfirmUploadResponse(BaseModel):
+    document: DocumentResponse
+    processing_run: ProcessingRunResponse
+
+
+class ApproveTypedRevisionResponse(BaseModel):
+    revision: TypedRevisionResponse
+    event_id: uuid.UUID

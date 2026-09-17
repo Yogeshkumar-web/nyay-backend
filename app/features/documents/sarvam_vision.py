@@ -323,7 +323,7 @@ def _extract_zip_output(output_zip: bytes) -> _ZipExtraction:
     output_files = archive.namelist()
     markdown_parts: list[str] = []
     markdown_texts: list[str] = []
-    json_payload: dict[str, Any] | list[Any] | None = None
+    json_payloads: list[dict[str, Any] | list[Any]] = []
     with archive:
         for name in sorted(output_files):
             suffix = Path(name).suffix.lower()
@@ -331,8 +331,18 @@ def _extract_zip_output(output_zip: bytes) -> _ZipExtraction:
                 markdown_text = archive.read(name).decode("utf-8", errors="replace")
                 markdown_texts.append(markdown_text.strip())
                 markdown_parts.append(markdown_text)
-            elif suffix == ".json" and json_payload is None:
-                json_payload = json.loads(archive.read(name).decode("utf-8", errors="replace"))
+            elif suffix == ".json":
+                json_payloads.append(
+                    json.loads(archive.read(name).decode("utf-8", errors="replace"))
+                )
+
+    json_payload: dict[str, Any] | list[Any] | None
+    if len(json_payloads) == 1:
+        json_payload = json_payloads[0]
+    elif json_payloads:
+        json_payload = json_payloads
+    else:
+        json_payload = None
 
     text = "\n\n".join(part.strip() for part in markdown_parts if part.strip())
     if not text and json_payload is not None:
@@ -430,6 +440,7 @@ def _build_pages(
     source_filenames: tuple[str, ...],
     fallback_page_texts: list[str],
 ) -> list[dict[str, Any]]:
+    page_payloads = _extract_page_payloads(json_payload)
     page_texts = _extract_page_texts(json_payload)
     if not page_texts:
         page_texts = fallback_page_texts if fallback_page_texts else [text]
@@ -438,6 +449,8 @@ def _build_pages(
 
     pages: list[dict[str, Any]] = []
     for index, page_text in enumerate(page_texts):
+        page_payload = page_payloads[index] if index < len(page_payloads) else {}
+        layout = _normalize_page_layout(page_payload)
         page_number = (
             original_page_numbers[index]
             if original_page_numbers and index < len(original_page_numbers)
@@ -451,25 +464,109 @@ def _build_pages(
                 if index < len(source_filenames)
                 else None,
                 "text": page_text,
+                "confidence": _layout_confidence(layout),
+                "layout": layout,
             }
         )
     return pages
 
 
-def _extract_page_texts(payload: dict[str, Any] | list[Any] | None) -> list[str]:
+def _extract_page_payloads(
+    payload: dict[str, Any] | list[Any] | None,
+) -> list[dict[str, Any]]:
     if payload is None:
         return []
-    candidates = payload.get("pages") if isinstance(payload, dict) else payload
+    if isinstance(payload, dict):
+        candidates = payload.get("pages")
+        if candidates is None and (
+            "page_num" in payload or "page_number" in payload or "blocks" in payload
+        ):
+            candidates = [payload]
+    else:
+        candidates = payload
     if not isinstance(candidates, list):
         return []
-    pages: list[str] = []
-    for page in candidates:
-        if not isinstance(page, dict):
+
+    flattened: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
             continue
+        nested = candidate.get("pages")
+        if isinstance(nested, list):
+            flattened.extend(page for page in nested if isinstance(page, dict))
+        else:
+            flattened.append(candidate)
+    return sorted(flattened, key=_page_sort_key)
+
+
+def _normalize_page_layout(page: dict[str, Any]) -> dict[str, Any]:
+    blocks: list[dict[str, Any]] = []
+    for block in page.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        blocks.append(
+            {
+                "text": str(block.get("text") or "").strip(),
+                "reading_order": block.get("reading_order"),
+                "layout_tag": block.get("layout_tag") or block.get("type"),
+                "confidence": block.get("confidence"),
+                "coordinates": block.get("coordinates") or block.get("bbox"),
+            }
+        )
+    return {
+        "blocks": blocks,
+        "tables": page.get("tables") if isinstance(page.get("tables"), list) else [],
+        "form_fields": (
+            page.get("form_fields")
+            if isinstance(page.get("form_fields"), list)
+            else []
+        ),
+    }
+
+
+def _layout_confidence(layout: dict[str, Any]) -> float | None:
+    values: list[float] = []
+    for block in layout.get("blocks") or []:
+        try:
+            confidence = float(block.get("confidence"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 0 <= confidence <= 1:
+            values.append(confidence)
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _extract_page_texts(payload: dict[str, Any] | list[Any] | None) -> list[str]:
+    pages: list[str] = []
+    for page in _extract_page_payloads(payload):
         text = page.get("text") or page.get("content") or page.get("markdown")
-        if isinstance(text, str) and text.strip():
+        if isinstance(text, str):
             pages.append(text.strip())
+            continue
+
+        blocks = page.get("blocks")
+        if not isinstance(blocks, list):
+            continue
+        ordered_blocks = sorted(
+            (block for block in blocks if isinstance(block, dict)),
+            key=lambda block: block.get("reading_order", 0),
+        )
+        pages.append(
+            "\n\n".join(
+                str(block.get("text") or "").strip()
+                for block in ordered_blocks
+                if str(block.get("text") or "").strip()
+            )
+        )
     return pages
+
+
+def _page_sort_key(page: dict[str, Any]) -> tuple[int, int]:
+    raw_number = page.get("page_num", page.get("page_number"))
+    try:
+        return (0, int(raw_number))
+    except (TypeError, ValueError):
+        return (1, 0)
 
 
 def _prepare_sarvam_input(file_bytes: bytes, mime_type: str) -> tuple[str, bytes]:

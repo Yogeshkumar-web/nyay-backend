@@ -62,10 +62,17 @@ class Settings(BaseSettings):
     # Google Cloud
     # ─────────────────────────────────────────────
     GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_PROJECT_ID: str = ""
+    GOOGLE_LOCATION: str = "us"
+    GOOGLE_DOCAI_PROCESSOR_ID: str = ""
+    GOOGLE_APPLICATION_CREDENTIALS: str = "secrets/google-docai-sa.json"
+    GOOGLE_DOCAI_GCS_BUCKET: str = "vakilsuite-bucket"
+    GOOGLE_DOCAI_POLL_INTERVAL_SECONDS: float = 3.0
+    GOOGLE_DOCAI_TIMEOUT_SECONDS: float = 900.0
+    GOOGLE_DOCAI_LOW_QUALITY_THRESHOLD: float = 0.5
 
     # ─────────────────────────────────────────────
     # AI Provider
-    # "gemini"  → Google Gemini (development)
     # AI provider routing — set AI_PROVIDER in .env to switch models
     # Supported values:
     #   "gemini"   → Google Gemini  (good free tier, multimodal)
@@ -75,9 +82,14 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────
     AI_PROVIDER: str = "gemini"
 
+    # Controls which provider is used for multimodal / OCR tasks (app/ai/client.py).
+    # Defaults to AI_PROVIDER if not set. Currently only "gemini" is supported.
+    VISION_AI_PROVIDER: str = "gemini"
+
     # Google Gemini
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.0-flash"  # gemini-2.5-flash has 20 req/day free limit
+    GEMINI_MODEL: str = "gemini-3.6-flash"         # text / extraction / drafts
+    GEMINI_VISION_MODEL: str = "gemini-3.6-flash"  # multimodal / OCR
 
     # Anthropic Claude
     ANTHROPIC_API_KEY: str = ""
@@ -112,6 +124,14 @@ class Settings(BaseSettings):
     SARVAM_REASONING_EFFORT: str | None = "low"
     SARVAM_REASONING_MAX_TOKENS: int = 4096
     SARVAM_REASONING_TIMEOUT_SECONDS: float = 120.0
+    DOCUMENT_VISION_PROVIDER: str = "gemini_vision"
+    DOCUMENT_TYPING_PROVIDER: str = "gemini"
+    DOCUMENT_PROCESSING_MAX_PAGE_CONCURRENCY: int = 4
+    DOCUMENT_PROCESSING_MAX_ATTEMPTS: int = 3
+    DOCUMENT_PROCESSING_STALE_AFTER_SECONDS: int = 900
+    DOCUMENT_DIGITAL_MIN_MEANINGFUL_CHARS: int = 40
+    DOCUMENT_VISION_BATCH_SIZE: int = 10
+    DOCUMENT_TYPING_BATCH_SIZE: int = 5
 
     # ─────────────────────────────────────────────
     # Sentry

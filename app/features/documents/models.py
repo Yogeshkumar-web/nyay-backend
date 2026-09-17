@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     BigInteger,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -65,35 +66,72 @@ class ProcessingRoute(str, enum.Enum):
 
 class ProcessingStatus(str, enum.Enum):
     pending = "pending"
+    queued = "queued"
     processing = "processing"
     completed = "completed"
+    ready_for_review = "ready_for_review"
+    approved = "approved"
     failed = "failed"
 
 
 class ProcessingRunStatus(str, enum.Enum):
     uploaded = "uploaded"
+    queued = "queued"
     splitting_pages = "splitting_pages"
+    classifying_pages = "classifying_pages"
+    extracting_pages = "extracting_pages"
     ocr_running = "ocr_running"
+    typing_pages = "typing_pages"
     stitching_pages = "stitching_pages"
     structured_extraction = "structured_extraction"
     ready_for_review = "ready_for_review"
     reviewed = "reviewed"
+    approved = "approved"
     docx_ready = "docx_ready"
     failed = "failed"
 
 
 class DocumentPageStatus(str, enum.Enum):
     pending = "pending"
+    inventoried = "inventoried"
     split = "split"
+    classified = "classified"
+    extracting = "extracting"
+    extracted = "extracted"
     ocr_running = "ocr_running"
     ocr_completed = "ocr_completed"
+    typing = "typing"
+    typed = "typed"
+    blank = "blank"
     failed = "failed"
+
+
+class DocumentPageClassification(str, enum.Enum):
+    digital = "digital"
+    scanned = "scanned"
+    digital_low_quality = "digital_low_quality"
+    blank = "blank"
+    failed = "failed"
+
+
+class DocumentExtractionMethod(str, enum.Enum):
+    embedded_text = "embedded_text"
+    vision_ocr = "vision_ocr"
+    none = "none"
 
 
 class DocReviewStatus(str, enum.Enum):
     pending = "pending"
     reviewed = "reviewed"
+    review_required = "review_required"
+    approved = "approved"
     pushed = "pushed"
+
+
+class TypedRevisionStatus(str, enum.Enum):
+    draft = "draft"
+    approved = "approved"
+    superseded = "superseded"
 
 
 class Document(Base):
@@ -182,6 +220,19 @@ class Document(Base):
 
     reviewed_content: Mapped[str | None] = mapped_column(Text)
 
+    active_processing_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_processing_runs.id", use_alter=True, ondelete="SET NULL"),
+    )
+    latest_typed_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_typed_revisions.id", use_alter=True, ondelete="SET NULL"),
+    )
+    approved_typed_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_typed_revisions.id", use_alter=True, ondelete="SET NULL"),
+    )
+
     review_status: Mapped[DocReviewStatus] = mapped_column(
         SAEnum(DocReviewStatus, name="doc_review_status"),
         nullable=False,
@@ -227,6 +278,7 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
         lazy="selectin",
+        foreign_keys="DocumentProcessingRun.document_id",
     )
 
     pages: Mapped[list["DocumentPage"]] = relationship(
@@ -240,6 +292,14 @@ class Document(Base):
         "DocumentDocxExport",
         back_populates="document",
         cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    typed_revisions: Mapped[list["DocumentTypedRevision"]] = relationship(
+        "DocumentTypedRevision",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        foreign_keys="DocumentTypedRevision.document_id",
         lazy="selectin",
     )
 
@@ -281,6 +341,14 @@ class DocumentProcessingRun(Base):
     error: Mapped[str | None] = mapped_column(Text)
     metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default="{}")
+    pipeline_version: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="document_pipeline_v2", server_default="document_pipeline_v2"
+    )
+    vision_provider_key: Mapped[str | None] = mapped_column(String(100))
+    typing_provider_key: Mapped[str | None] = mapped_column(String(100))
+    total_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    completed_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    failed_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     started_at: Mapped[datetime] = mapped_column(default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
@@ -289,6 +357,7 @@ class DocumentProcessingRun(Base):
     document: Mapped["Document"] = relationship(
         "Document",
         back_populates="processing_runs",
+        foreign_keys=[document_id],
     )
 
     pages: Mapped[list["DocumentPage"]] = relationship(
@@ -334,6 +403,25 @@ class DocumentPage(Base):
     )
     ocr_text: Mapped[str | None] = mapped_column(Text)
     ocr_artifact: Mapped[dict | None] = mapped_column(JSONB)
+    classification: Mapped[DocumentPageClassification | None] = mapped_column(
+        SAEnum(DocumentPageClassification, name="document_page_classification")
+    )
+    extraction_method: Mapped[DocumentExtractionMethod | None] = mapped_column(
+        SAEnum(DocumentExtractionMethod, name="document_extraction_method")
+    )
+    embedded_text: Mapped[str | None] = mapped_column(Text)
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    typed_markdown: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    language: Mapped[str | None] = mapped_column(String(20))
+    provider_key: Mapped[str | None] = mapped_column(String(100))
+    provider_version: Mapped[str | None] = mapped_column(String(100))
+    provider_job_id: Mapped[str | None] = mapped_column(String(255))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    warnings: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    classification_artifact: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    provider_artifact: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    content_hashes: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(default=func.now())
     updated_at: Mapped[datetime] = mapped_column(default=func.now(), onupdate=func.now())
@@ -371,6 +459,10 @@ class DocumentDocxExport(Base):
         ForeignKey("users.id"),
         nullable=False,
     )
+    approved_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("document_typed_revisions.id", ondelete="SET NULL"),
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -388,3 +480,68 @@ class DocumentDocxExport(Base):
         "User",
         foreign_keys=[exported_by],
     )
+
+
+class DocumentTypedRevision(Base):
+    __tablename__ = "document_typed_revisions"
+
+    __table_args__ = (
+        Index("ix_document_typed_revisions_document_number", "document_id", "revision_number", unique=True),
+        Index("ix_document_typed_revisions_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    processing_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_processing_runs.id", ondelete="SET NULL")
+    )
+    parent_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_typed_revisions.id", ondelete="SET NULL")
+    )
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    lock_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    content_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_structure: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    canonical_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    status: Mapped[TypedRevisionStatus] = mapped_column(
+        SAEnum(TypedRevisionStatus, name="typed_revision_status"),
+        nullable=False,
+        default=TypedRevisionStatus.draft,
+        server_default="draft",
+    )
+    created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(default=func.now(), onupdate=func.now())
+
+    document: Mapped["Document"] = relationship(
+        "Document", back_populates="typed_revisions", foreign_keys=[document_id]
+    )
+
+
+class DocumentDomainEvent(Base):
+    __tablename__ = "document_domain_events"
+
+    __table_args__ = (
+        Index("ix_document_domain_events_unpublished", "published_at", "occurred_at"),
+        Index("ix_document_domain_events_document", "document_id", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    occurred_at: Mapped[datetime] = mapped_column(default=func.now())
+    published_at: Mapped[datetime | None] = mapped_column(DateTime)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)

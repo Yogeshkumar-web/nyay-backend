@@ -37,5 +37,10 @@ celery_app.conf.update(
             "schedule": crontab(hour=7, minute=30, day_of_week="mon-sat"),
             "options": {"queue": "default"},
         },
+        "reconcile-queued-document-runs": {
+            "task": "documents.reconcile_queued_runs",
+            "schedule": 300.0,
+            "options": {"queue": "default"},
+        },
     },
 )
